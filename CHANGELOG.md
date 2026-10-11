@@ -28,6 +28,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- A tenant-member PATCH that changes both suspension and role is now one
+  validated mutation and one durable write. Previously suspension was
+  persisted first, so a rejected role left the member suspended while the API
+  reported an error.
 - Release activation is now an explicit commit point for Git deployments,
   pipeline releases, and Git rollbacks. Losing the mutation lock after the
   release went live previously returned HTTP 409, so the durable job failed

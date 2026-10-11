@@ -1008,9 +1008,20 @@ func (s *AccountStore) CreateMember(tenantID, username, password, totpSecret, ro
 }
 
 func (s *AccountStore) SetMemberRole(username, role string) (HostingAccount, error) {
-	username, role = safeUser(username), strings.ToLower(strings.TrimSpace(role))
-	if role != "manager" && role != "developer" && role != "viewer" {
-		return HostingAccount{}, errors.New("member role must be manager, developer, or viewer")
+	return s.UpdateMember(username, &role, nil)
+}
+
+// UpdateMember applies a tenant member's role and suspension changes as one
+// validated mutation and one durable write: either both take effect or
+// neither does. A nil role or suspended leaves that attribute unchanged.
+func (s *AccountStore) UpdateMember(username string, role *string, suspended *bool) (HostingAccount, error) {
+	username = safeUser(username)
+	if role != nil {
+		normalized := strings.ToLower(strings.TrimSpace(*role))
+		if normalized != "manager" && normalized != "developer" && normalized != "viewer" {
+			return HostingAccount{}, errors.New("member role must be manager, developer, or viewer")
+		}
+		role = &normalized
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1022,7 +1033,15 @@ func (s *AccountStore) SetMemberRole(username, role string) (HostingAccount, err
 		return HostingAccount{}, errors.New("tenant member not found")
 	}
 	previous := account
-	account.Role = role
+	if role != nil {
+		account.Role = *role
+	}
+	if suspended != nil && account.Suspended != *suspended {
+		account.Suspended = *suspended
+		// A failed session-registry write must not make an old cookie valid
+		// again if the account is later unsuspended.
+		account.SessionGeneration++
+	}
 	if err := validateHostingAccount(account, true); err != nil {
 		return HostingAccount{}, err
 	}

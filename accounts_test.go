@@ -970,3 +970,44 @@ func TestStaleAccountStoreCannotClaimReassignedSite(t *testing.T) {
 		t.Fatalf("stale claim of an owned site error = %v, want conflict", err)
 	}
 }
+
+func TestUpdateMemberAppliesSuspensionAndRoleTogether(t *testing.T) {
+	db, err := openControlPlaneDB(filepath.Join(t.TempDir(), "control-plane.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, err := OpenAccountStoreDB(db, "", "account-encryption-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create("customer", "a sufficiently long customer password", testTOTPSecret, "starter", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateMember("customer", "customer-dev", "a sufficiently long member password", testTOTPSecret, "developer"); err != nil {
+		t.Fatal(err)
+	}
+	suspend, invalid := true, "superuser"
+	if _, err := store.UpdateMember("customer-dev", &invalid, &suspend); err == nil {
+		t.Fatal("invalid role was accepted")
+	}
+	if member, _ := store.Get("customer-dev"); member.Suspended || member.Role != "developer" {
+		t.Fatalf("rejected update partially applied: suspended=%v role=%q", member.Suspended, member.Role)
+	}
+	viewer := "viewer"
+	updated, err := store.UpdateMember("customer-dev", &viewer, &suspend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenAccountStoreDB(db, "", "account-encryption-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, _ := reopened.Get("customer-dev")
+	if !updated.Suspended || updated.Role != "viewer" || !member.Suspended || member.Role != "viewer" || member.SessionGeneration == 0 {
+		t.Fatalf("combined update = %+v, durable = %+v", updated, member)
+	}
+	if _, err := store.UpdateMember("customer", &viewer, nil); err == nil {
+		t.Fatal("tenant owner was updated as a member")
+	}
+}

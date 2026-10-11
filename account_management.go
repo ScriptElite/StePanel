@@ -330,21 +330,18 @@ func (a *App) accountMembers(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if input.Suspended != nil {
-			if _, err := a.Accounts.SetSuspended(memberName, *input.Suspended); err != nil {
-				intent.Failed(err.Error())
-				http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-				return
-			}
-		}
+		var role *string
 		if strings.TrimSpace(input.Role) != "" {
-			if _, err := a.Accounts.SetMemberRole(memberName, input.Role); err != nil {
-				intent.Failed(err.Error())
-				http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-				return
-			}
+			role = &input.Role
 		}
-		updated, _ := a.Accounts.Get(memberName)
+		// Suspension and role change are one mutation: a rejected role must
+		// not leave the suspension half-applied.
+		updated, err := a.Accounts.UpdateMember(memberName, role, input.Suspended)
+		if err != nil {
+			intent.Failed(err.Error())
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
 		result := fmt.Sprintf("role=%s suspended=%t", accountRole(updated), updated.Suspended)
 		if intent != nil {
 			intent.Completed(result)

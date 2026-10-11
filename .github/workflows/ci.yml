@@ -96,11 +96,11 @@ jobs:
           sudo env STEPANEL_ENOSPC_BACKUP_ROOT="$mount_root" \
             STEPANEL_ENOSPC_ALLOW_TMPFS=1 "$test_binary" \
             -test.run '^TestBackupRecoversFromRealENOSPC$' -test.v
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: recovery-drill-results
           path: /tmp/stepanel-recovery-drills.md
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: go-coverage
           path: coverage.out
@@ -327,14 +327,14 @@ jobs:
         run: ./scripts/e2e-ui-test.sh ./stepanel
       - name: Upload live seeded UI screenshots
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: stepanel-live-ui-screenshots
           path: ${{ runner.temp }}/stepanel-live-screenshots
           if-no-files-found: ignore
       - name: Upload Playwright failure artifacts
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-results
           path: test-results/

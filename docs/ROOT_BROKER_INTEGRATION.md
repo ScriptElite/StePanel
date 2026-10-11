@@ -90,8 +90,10 @@ operations through a resource-scoped scheduler (`internal/rootbroker/scheduler.g
   catalogs) stays serialized by the helpers' own `flock` locks; host account
   changes (`useradd`, `userdel`, `usermod`) are serialized inside the broker.
 - Each connection must send its request within 30 seconds and read its
-  response within 30 seconds, requests are capped at 96 MiB, and at most 64
-  connections are served at once.
+  response within 30 seconds, and at most 64 connections are served at once.
+- Each request is capped at 8 MiB on both the socket and stdin transports,
+  and request bytes buffered across all connections share a 64 MiB budget;
+  a request that would exceed either is refused and its connection closed.
 
 ## Integration Pattern
 
@@ -211,7 +213,8 @@ response: for `restore*` the broker reads `dump_path`; for `dump` with
 the panel created under an approved staging root (`/var/www`,
 `/var/lib/ste-panel`, `/var/backups/stepanel`), checked on the opened
 descriptor. Production backups always use this path, so a dump's size is not
-limited by the 64 MiB in-response cap.
+limited by the 4 MiB inline dump cap (`rootbroker.MaxInlineDumpBytes`),
+which applies to `dump_data` in requests and responses.
 
 Example:
 

@@ -14,6 +14,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -101,15 +102,95 @@ const (
 	// maxSocketConnections bounds concurrently served connections. Execution
 	// itself is bounded separately by the scheduler.
 	maxSocketConnections = 64
-	// maxSocketRequestBytes covers the 64 MiB helper input limit after JSON
-	// base64 encoding, plus the surrounding request.
-	maxSocketRequestBytes = 96 << 20
+	// maxRequestBytes bounds one encoded request on either transport. Bulk
+	// data (database dumps) is passed as a validated file path the broker
+	// streams from, never inline; the largest inline payload is the bounded
+	// legacy restore-dump body (rootbroker.MaxInlineDumpBytes) after base64.
+	maxRequestBytes = 8 << 20
+	// maxBufferedRequestBytes is the broker-wide budget for request bytes
+	// read but not yet released, across all connections. Connection count
+	// alone would allow maxSocketConnections * maxRequestBytes of buffered
+	// input in a privileged process.
+	maxBufferedRequestBytes = 64 << 20
 )
+
+var (
+	errRequestTooLarge        = fmt.Errorf("request exceeds the %d-byte broker request limit", maxRequestBytes)
+	errRequestBudgetExhausted = errors.New("broker request memory budget is exhausted; retry the operation")
+)
+
+// requestBudget accounts for request bytes held by all connections.
+type requestBudget struct {
+	used  atomic.Int64
+	limit int64
+}
+
+var brokerRequestBudget = &requestBudget{limit: maxBufferedRequestBytes}
+
+func (b *requestBudget) reserve(n int64) bool {
+	for {
+		used := b.used.Load()
+		if used+n > b.limit {
+			return false
+		}
+		if b.used.CompareAndSwap(used, used+n) {
+			return true
+		}
+	}
+}
+
+func (b *requestBudget) release(n int64) {
+	b.used.Add(-n)
+}
+
+// budgetedReader enforces the per-request limit and charges every byte read
+// to the shared budget until the request it belongs to has been served.
+// The JSON decoder may read ahead into the next request; those bytes stay
+// charged to the connection until it is released.
+type budgetedReader struct {
+	reader  io.Reader
+	budget  *requestBudget
+	limit   int64
+	read    int64 // bytes read for the current request
+	charged int64 // bytes charged to the budget
+}
+
+func newBudgetedReader(reader io.Reader, budget *requestBudget, limit int64) *budgetedReader {
+	return &budgetedReader{reader: reader, budget: budget, limit: limit}
+}
+
+func (r *budgetedReader) Read(p []byte) (int, error) {
+	remaining := r.limit - r.read
+	if remaining <= 0 {
+		return 0, errRequestTooLarge
+	}
+	if int64(len(p)) > remaining {
+		p = p[:remaining]
+	}
+	want := int64(len(p))
+	if !r.budget.reserve(want) {
+		return 0, errRequestBudgetExhausted
+	}
+	n, err := r.reader.Read(p)
+	r.budget.release(want - int64(n))
+	r.read += int64(n)
+	r.charged += int64(n)
+	return n, err
+}
+
+// nextRequest releases the budget held by the request just served and
+// starts the per-request limit again.
+func (r *budgetedReader) nextRequest() {
+	r.budget.release(r.charged)
+	r.read, r.charged = 0, 0
+}
 
 func serveRequests(broker executor, reader io.Reader, writer io.Writer, logger *log.Logger) {
 	// Read requests from stdin, write responses to stdout. Each request and
 	// response is a single JSON line.
-	decoder := json.NewDecoder(reader)
+	budgeted := newBudgetedReader(reader, brokerRequestBudget, maxRequestBytes)
+	defer budgeted.nextRequest()
+	decoder := json.NewDecoder(budgeted)
 	encoder := json.NewEncoder(writer)
 
 	for {
@@ -117,6 +198,13 @@ func serveRequests(broker executor, reader io.Reader, writer io.Writer, logger *
 		if err := decoder.Decode(&req); err != nil {
 			if err == io.EOF {
 				break
+			}
+			if errors.Is(err, errRequestTooLarge) || errors.Is(err, errRequestBudgetExhausted) {
+				// There is no resynchronization point inside an oversized
+				// request; answer once and stop.
+				logger.Printf("decode error: %v", err)
+				_ = encoder.Encode(rootbroker.Response{OK: false, Error: err.Error()})
+				return
 			}
 			logger.Printf("decode error: %v", err)
 			resp := rootbroker.Response{
@@ -129,6 +217,7 @@ func serveRequests(broker executor, reader io.Reader, writer io.Writer, logger *
 		if err := encoder.Encode(executeRequest(broker, &req, logger)); err != nil {
 			logger.Printf("encode error: %v", err)
 		}
+		budgeted.nextRequest()
 	}
 }
 
@@ -155,7 +244,9 @@ func executeRequest(broker executor, req *rootbroker.Request, logger *log.Logger
 // peer.
 func serveConn(broker executor, conn net.Conn, limits connLimits, logger *log.Logger) {
 	defer conn.Close()
-	decoder := json.NewDecoder(io.LimitReader(conn, maxSocketRequestBytes))
+	budgeted := newBudgetedReader(conn, brokerRequestBudget, maxRequestBytes)
+	defer budgeted.nextRequest()
+	decoder := json.NewDecoder(budgeted)
 	encoder := json.NewEncoder(conn)
 	for {
 		if err := conn.SetReadDeadline(time.Now().Add(limits.read)); err != nil {
@@ -183,6 +274,7 @@ func serveConn(broker executor, conn net.Conn, limits connLimits, logger *log.Lo
 		if !writeSocketResponse(conn, encoder, executeRequest(broker, &req, logger), limits, logger) {
 			return
 		}
+		budgeted.nextRequest()
 	}
 }
 

@@ -32,7 +32,10 @@ import (
 // ErrNotImplemented is returned when a broker operation is not yet implemented
 var ErrNotImplemented = errors.New("operation not yet implemented in broker")
 
-const maxBrokerDBDumpBytes = 64 << 20
+// MaxInlineDumpBytes bounds a database dump carried inside a broker request
+// or response. Production dumps and restores stream through a validated
+// staging file (DumpPath) instead, so request buffering stays small.
+const MaxInlineDumpBytes = 4 << 20
 
 // Every broker subprocess runs through stepanelhelper.RunCapped so output is
 // bounded while the child runs and overruns kill the whole process group;
@@ -1217,7 +1220,7 @@ func (b *Broker) dbReconcile(ctx context.Context) (*Response, error) {
 
 func (b *Broker) dbDump(ctx context.Context, req *DBRequest) (*Response, error) {
 	cmd := stepanelhelper.NewCommand(ctx, b.dbctlPath, "dump", req.Database)
-	output, stderr, err := stepanelhelper.RunCappedSeparate(ctx, cmd, maxBrokerDBDumpBytes, maxBrokerCommandStderr)
+	output, stderr, err := stepanelhelper.RunCappedSeparate(ctx, cmd, MaxInlineDumpBytes, maxBrokerCommandStderr)
 	if errors.Is(err, stepanelhelper.ErrOutputLimitExceeded) {
 		return &Response{OK: false, Error: "database dump exceeds the broker limit; use the compatibility helper path"}, nil
 	}
@@ -1325,7 +1328,7 @@ func (b *Broker) dbRestoreDump(ctx context.Context, req *DBRequest) (*Response, 
 	if len(req.DumpData) == 0 {
 		return &Response{OK: false, Error: "dump data is empty"}, nil
 	}
-	if len(req.DumpData) > maxBrokerDBDumpBytes {
+	if len(req.DumpData) > MaxInlineDumpBytes {
 		return &Response{OK: false, Error: "dump data exceeds the broker limit; use the streaming restore path"}, nil
 	}
 	return b.runDBHelper(ctx, []string{"restore-dump", req.Database, req.Site}, req.DumpData, DBResponse{Restored: true, Database: req.Database})

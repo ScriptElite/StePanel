@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -132,5 +134,91 @@ func TestSocketRejectsMalformedRequestAndCloses(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("connection stayed open after a malformed request")
+	}
+}
+
+type healthExecutor struct{}
+
+func (healthExecutor) Execute(context.Context, *rootbroker.Request) (*rootbroker.Response, error) {
+	return &rootbroker.Response{OK: true}, nil
+}
+
+func TestSocketRejectsOversizedRequest(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	go serveConn(healthExecutor{}, server, defaultConnLimits, log.New(io.Discard, "", 0))
+	go func() {
+		payload := strings.Repeat("A", maxRequestBytes)
+		_, _ = client.Write([]byte(`{"type":"db","db":{"action":"restore-dump","dump_data":"` + payload + `"}}` + "\n"))
+	}()
+	if err := client.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var resp rootbroker.Response
+	if err := json.NewDecoder(client).Decode(&resp); err != nil {
+		t.Fatalf("decode refusal: %v", err)
+	}
+	if resp.OK || !strings.Contains(resp.Error, "request limit") {
+		t.Fatalf("oversized request response = %+v", resp)
+	}
+	if used := brokerRequestBudget.used.Load(); used != 0 {
+		// serveConn may still be returning; give it a moment to release.
+		time.Sleep(100 * time.Millisecond)
+		if used = brokerRequestBudget.used.Load(); used != 0 {
+			t.Fatalf("budget still holds %d bytes after the connection closed", used)
+		}
+	}
+}
+
+// The per-request limit restarts for each request: a long-lived connection
+// is not cut off by the cumulative size of many small requests.
+func TestRequestLimitAppliesPerRequest(t *testing.T) {
+	budget := &requestBudget{limit: 1 << 20}
+	var input strings.Builder
+	for range 100 {
+		input.WriteString(`{"type":"health"}` + "\n")
+	}
+	reader := newBudgetedReader(strings.NewReader(input.String()), budget, 64)
+	decoder := json.NewDecoder(reader)
+	for i := range 100 {
+		var req rootbroker.Request
+		if err := decoder.Decode(&req); err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		reader.nextRequest()
+	}
+	if budget.used.Load() != 0 {
+		t.Fatalf("budget holds %d bytes after all requests were served", budget.used.Load())
+	}
+}
+
+func TestRequestBudgetIsSharedAcrossConnections(t *testing.T) {
+	budget := &requestBudget{limit: 1024}
+	first := newBudgetedReader(strings.NewReader(strings.Repeat("x", 1024)), budget, 4096)
+	if _, err := io.ReadAll(io.LimitReader(first, 1024)); err != nil {
+		t.Fatal(err)
+	}
+	second := newBudgetedReader(strings.NewReader("y"), budget, 4096)
+	if _, err := second.Read(make([]byte, 1)); !errors.Is(err, errRequestBudgetExhausted) {
+		t.Fatalf("read beyond the shared budget error = %v", err)
+	}
+	first.nextRequest()
+	if n, err := second.Read(make([]byte, 1)); n != 1 || err != nil {
+		t.Fatalf("read after release = %d, %v", n, err)
+	}
+}
+
+func TestStdinTransportRejectsOversizedRequest(t *testing.T) {
+	payload := strings.Repeat("A", maxRequestBytes)
+	input := strings.NewReader(`{"type":"db","db":{"dump_data":"` + payload + `"}}` + "\n" + `{"type":"health"}` + "\n")
+	var output strings.Builder
+	serveRequests(healthExecutor{}, input, &output, log.New(io.Discard, "", 0))
+	decoder := json.NewDecoder(strings.NewReader(output.String()))
+	var resp rootbroker.Response
+	if err := decoder.Decode(&resp); err != nil || resp.OK || !strings.Contains(resp.Error, "request limit") {
+		t.Fatalf("oversized stdin request response = %+v, %v", resp, err)
+	}
+	if decoder.More() {
+		t.Fatal("transport kept reading after an oversized request")
 	}
 }

@@ -8,6 +8,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Security
 
+- The root broker now caps each request at 8 MiB (previously 96 MiB per
+  socket connection, and unbounded on the stdin transport) and charges
+  buffered request bytes to a 64 MiB broker-wide budget, so 64 concurrent
+  authorized connections can no longer hold several gigabytes of input in
+  the privileged process. Inline database dumps are capped at 4 MiB; all
+  production dumps and restores already stream through validated files.
 - Site operations queued by an API token now record the token ID and are
   revalidated against that token when the worker starts them. Previously the
   worker replayed the saved username and scope list, so revoking a token did

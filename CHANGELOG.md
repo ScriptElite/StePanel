@@ -40,11 +40,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   `/api/backups` taking 89 seconds across 65 retained artifacts, causing its
   10-second request deadline to fail; listings now verify archive contents
   only for matching page results, with regression coverage proving another
-  site's archive is not opened.
+  site's archive is not opened. A focused Rocky Linux 9 retest passed backup,
+  file/database restore, and termination kill boundaries; listing latency fell
+  to 14–18 ms. The interrupted full-matrix run is explicitly recorded as
+  incomplete, and a current-source rerun remains required.
 - Make the SSH inventory concurrency test deterministic with a barrier across
   all simulated hosts. CI showed that a short context deadline could expire
   before the scheduler started the slow-host goroutine, falsely reporting
   serialized inspection despite the bounded concurrent implementation.
+- Record the failed full KVM matrix attempt and the focused current-panel
+  retest in the authoritative gate documents. The focused run proves the
+  backup-listing regression is corrected, but does not count as a repeated
+  recovery-matrix pass.
 - The production gates now state the exact 1.0 deployment promise and add
   P0 gates for cross-process data consistency, authoritative deployment
   status, a StePanel-maintained WordPress restore proof, operational

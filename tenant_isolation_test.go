@@ -884,11 +884,16 @@ func TestRunnerWorksUnderSELinuxAndKeepsLastGoodArtifact(t *testing.T) {
 		`-v "$source_copy:/src:ro,Z"`,
 		`-v "$build_artifact:/artifact:rw,Z"`,
 		`restorecon -R -F -x -- "$build_artifact"`,
-		`runuser -u "$site_user" -- mv -T -- "$build_artifact" "$artifact"`,
+		`run_site_command mv -T -- "$build_artifact" "$artifact"`,
+		`--uid="$site_user" --gid="$site_user"`,
+		`runner_script_dir=$(mktemp -d /run/stepanel-runner-input.XXXXXXXX)`,
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("runner helper is missing %q", required)
 		}
+	}
+	if strings.Contains(text, `runuser -u "$site_user" --`) {
+		t.Fatal("runner helper must not rely on direct setuid transitions")
 	}
 }
 

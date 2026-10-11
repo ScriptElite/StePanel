@@ -28,6 +28,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- The SSH server inventory now inspects servers concurrently (at most four at
+  a time), gives each host its own 15-second deadline within a 30-second
+  limit bound to the HTTP request, and caps subprocess output through the
+  shared bounded runner. A slow or flooding host no longer consumes the time
+  other hosts need, a disconnected client cancels the inspections, and every
+  server receives a result with failures also listed in `warnings`.
 - A tenant-member PATCH that changes both suspension and role is now one
   validated mutation and one durable write. Previously suspension was
   persisted first, so a rejected role left the member suspended while the API

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	h "github.com/cyberducttape/StePanel/internal/helper"
@@ -51,19 +52,57 @@ func configuredSSHServers() []string {
 
 var sshAliasPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@:-]{0,127}$`)
 
-func (a *App) sshInventory(w http.ResponseWriter, _ *http.Request) {
+const (
+	sshInventoryConcurrency  = 4
+	sshInventoryTotalTimeout = 30 * time.Second
+	sshInventoryHostTimeout  = 15 * time.Second
+	sshInventoryStdoutLimit  = 16 << 10
+	sshInventoryStderrLimit  = 4 << 10
+)
+
+// inspectSSHServerFunc is replaced in tests to simulate slow or failing hosts.
+var inspectSSHServerFunc = inspectSSHServer
+
+// sshInventory inspects every configured server concurrently, each under its
+// own deadline, so one slow host cannot consume the time the others need.
+// The whole inventory is bound to the request: a disconnected client cancels
+// outstanding inspections. Every server gets a result; unreachable servers
+// are also summarized in warnings.
+func (a *App) sshInventory(w http.ResponseWriter, r *http.Request) {
 	servers := configuredSSHServers()
 	if len(servers) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{"servers": []SSHServerStatus{}, "warnings": []string{"STEPANEL_SSH_SERVERS is not configured"}})
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), sshInventoryTotalTimeout)
 	defer cancel()
-	results := make([]SSHServerStatus, 0, len(servers))
-	for _, server := range servers {
-		results = append(results, inspectSSHServer(ctx, server))
+	results := make([]SSHServerStatus, len(servers))
+	slots := make(chan struct{}, sshInventoryConcurrency)
+	var wg sync.WaitGroup
+	for i, server := range servers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case slots <- struct{}{}:
+				defer func() { <-slots }()
+			case <-ctx.Done():
+				results[i] = SSHServerStatus{Server: server, Error: "SSH inspection was not started before the inventory deadline"}
+				return
+			}
+			hostCtx, hostCancel := context.WithTimeout(ctx, sshInventoryHostTimeout)
+			defer hostCancel()
+			results[i] = inspectSSHServerFunc(hostCtx, server)
+		}()
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"servers": results, "time": time.Now().UTC()})
+	wg.Wait()
+	warnings := []string{}
+	for _, result := range results {
+		if !result.Reachable {
+			warnings = append(warnings, result.Server+": "+result.Error)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"servers": results, "warnings": warnings, "time": time.Now().UTC()})
 }
 
 func (a *App) sshAction(w http.ResponseWriter, r *http.Request) {
@@ -118,9 +157,12 @@ func inspectSSHServer(ctx context.Context, server string) SSHServerStatus {
 	status := SSHServerStatus{Server: server}
 	command := `printf '%s\n' "$(hostname)"; . /etc/os-release 2>/dev/null && printf '%s\n' "${PRETTY_NAME:-unknown}" || printf '%s\n' unknown; systemctl --failed --no-legend --plain 2>/dev/null | wc -l; df -P -h / 2>/dev/null | tail -n 1`
 	cmd := h.NewCommand(ctx, "ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=8", server, "sh", "-c", command)
-	out, err := cmd.Output()
+	out, stderr, err := h.RunCappedSeparate(ctx, cmd, sshInventoryStdoutLimit, sshInventoryStderrLimit)
 	if err != nil {
 		status.Error = fmt.Sprintf("SSH inspection failed: %v", err)
+		if detail := strings.TrimSpace(string(stderr)); detail != "" {
+			status.Error += ": " + detail
+		}
 		return status
 	}
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")

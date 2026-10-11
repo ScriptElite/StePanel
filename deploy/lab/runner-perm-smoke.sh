@@ -66,7 +66,7 @@ artifact="$site_root/.stepanel-artifact"
 scratch="$site_root/.stepanel-runner-scratch"
 
 # The build reads a copy of the source; prove the copy carries live content.
-runuser -u "$site_user" -- sh -c 'printf "%s\n" runner-source > "$1"' sh "$site_root/public/stepanel-runner-source.txt"
+printf '%s\n' runner-source | runuser -u "$site_user" -- tee "$site_root/public/stepanel-runner-source.txt" >/dev/null
 selinux=0
 if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then selinux=1; fi
 public_label_before=$( (( selinux )) && stat -c %C -- "$site_root/public" || true)

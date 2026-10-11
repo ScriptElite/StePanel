@@ -109,7 +109,6 @@ ensure_subid_range gid || exit 1
 flock -u 9
 exec 9>&-
 artifact="$site_root/.stepanel-artifact"
-scratch=
 source_copy=
 build_artifact=
 # Podman storage lives outside the web tree: under SELinux the site tree is
@@ -121,7 +120,11 @@ runner_home="$runner_storage_root/$site_user"
 install -d -m 0711 -o root -g root /var/lib/containers "$runner_storage_root"
 [[ -d $runner_home && ! -L $runner_home ]] || install -d -m 0700 -o "$site_user" -g "$site_user" "$runner_home"
 [[ $(stat -c '%u:%g' -- "$runner_home") == "$site_uid:$site_gid" ]] || { echo 'runner storage has unexpected ownership' >&2; exit 1; }
-runuser -u "$site_user" -- install -d -m 0700 "$runner_home/storage"
+[[ ! -L $runner_home/storage ]] || { echo 'runner storage path must not be a symbolic link' >&2; exit 1; }
+[[ ! -e $runner_home/storage ]] || [[ -d $runner_home/storage && $(stat -c '%u:%g' -- "$runner_home/storage") == "$site_uid:$site_gid" ]] || {
+  echo 'runner storage has unexpected ownership or type' >&2
+  exit 1
+}
 
 # Podman must run outside the broker's NoNewPrivileges and namespace
 # restrictions: newuidmap/newgidmap need their narrowly scoped setuid
@@ -131,27 +134,64 @@ runuser -u "$site_user" -- install -d -m 0700 "$runner_home/storage"
 # limit so a killed broker cannot leave a build running indefinitely.
 runner_unit=
 runner_runtime=
-runner_log_dir="/run/stepanel-runner-log-$runner_owner_pid"
-install -d -m 0700 -o root -g root "$runner_log_dir"
+runner_log_dir=$(mktemp -d /run/stepanel-runner-log.XXXXXXXX)
+chmod 0700 "$runner_log_dir"
+runner_script_dir=$(mktemp -d /run/stepanel-runner-input.XXXXXXXX)
+chmod 0711 "$runner_script_dir"
+runner_script="$runner_script_dir/build.sh"
+# The EXIT trap invokes this cleanup function indirectly.
+# shellcheck disable=SC2329
 cleanup_runner() {
-  rm -rf -- "$runner_log_dir" 2>/dev/null || true
   if [[ -n ${runner_unit:-} ]]; then
     systemctl stop "$runner_unit" >/dev/null 2>&1 || true
   fi
   if [[ -n ${runner_runtime:-} ]]; then
     rm -rf -- "/run/$runner_runtime" 2>/dev/null || true
   fi
-  if [[ -n ${scratch:-} ]]; then
-    runuser -u "$site_user" -- rm -rf -- "$scratch" 2>/dev/null || true
-  fi
   if [[ -n ${source_copy:-} ]]; then
     rm -rf -- "$source_copy" 2>/dev/null || true
   fi
   if [[ -n ${build_artifact:-} ]]; then
-    runuser -u "$site_user" -- rm -rf -- "$build_artifact" 2>/dev/null || true
+    run_site_command rm -rf -- "$build_artifact" >/dev/null 2>&1 || true
   fi
+  rm -rf -- "$runner_script_dir" 2>/dev/null || true
+  rm -rf -- "$runner_log_dir" 2>/dev/null || true
 }
 trap cleanup_runner EXIT
+install -o root -g "$site_gid" -m 0640 -- "$script" "$runner_script"
+
+# The root broker runs under a hardened systemd service context. Direct
+# runuser/setuid transitions can fail when a build is requested through the
+# broker, even though this helper may appear to work from an interactive root
+# shell. Ask systemd (PID 1) to run narrowly scoped,
+# synchronous filesystem commands as the site account instead. Their
+# writable view is limited to this site's tree and private runner storage.
+# Keep output in a root-only file because --pipe is unreliable for nested
+# systemd-run invocations from a system service.
+run_site_command() {
+  local unit="stepanel-runner-sitecmd-${runner_owner_pid}-${RANDOM}.service"
+  local log="$runner_log_dir/$BASHPID-$RANDOM.log"
+  local status
+  if systemd-run --quiet --wait --collect --service-type=exec --unit="$unit" \
+    --property="StandardOutput=append:$log" --property="StandardError=append:$log" \
+    --uid="$site_user" --gid="$site_user" --working-directory=/ \
+    --property=NoNewPrivileges=yes --property=RestrictSUIDSGID=yes \
+    --property=PrivateTmp=yes --property=ProtectHome=yes \
+    --property=ProtectSystem=strict --property=ProtectProc=invisible \
+    --property="ReadWritePaths=$site_root" --property="ReadWritePaths=$runner_home" \
+    --property=PartOf=stepanel-root-broker.service \
+    --property=RuntimeMaxSec=2min --property=TimeoutStopSec=5s \
+    -- "$@"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ -f $log ]]; then
+    cat -- "$log"
+    rm -f -- "$log"
+  fi
+  return "$status"
+}
 
 run_podman_as_site() {
   # Podman 5 records its run directories in the storage database on first use
@@ -264,6 +304,13 @@ run_podman_as_site() {
   return "$status"
 }
 
+# Prepare the storage path before Podman first touches its graph root.
+run_site_command install -d -m 0700 "$runner_home/storage"
+[[ -d $runner_home/storage && ! -L $runner_home/storage && $(stat -c '%u:%g' -- "$runner_home/storage") == "$site_uid:$site_gid" ]] || {
+  echo 'runner storage has unexpected ownership or type after creation' >&2
+  exit 1
+}
+
 # Pull the immutable digest before execution so the size gate cannot be
 # bypassed by a first-use pull during `podman run`. Preserve the bounded
 # systemd/Podman diagnostic; otherwise a transient-unit failure is reported
@@ -289,12 +336,12 @@ image_size=$(printf '%s\n' "$image_inspect_output" | awk '/^[0-9]+$/ { size = $0
 # Each build writes a fresh directory. It replaces .stepanel-artifact only
 # after the build succeeds, so a failed build leaves the last good artifact
 # intact. Build directories orphaned by a killed run are removed first.
-runuser -u "$site_user" -- find -P "$site_root" -mindepth 1 -maxdepth 1 -name '.stepanel-build.*' -mmin +60 -exec rm -rf -- {} +
-build_artifact=$(runuser -u "$site_user" -- mktemp -d "$site_root/.stepanel-build.XXXXXXXX")
+run_site_command find -P "$site_root" -mindepth 1 -maxdepth 1 -name '.stepanel-build.*' -mmin +60 -exec rm -rf -- {} +
+build_artifact=$(run_site_command mktemp -d "$site_root/.stepanel-build.XXXXXXXX")
 # mktemp creates 0700, which also sets the ACL mask to ---; the panel must be
 # able to validate and publish the artifact through its ACL entry. Symbolic
 # modes keep the setgid bit inherited from the site root.
-runuser -u "$site_user" -- chmod u=rwx,g=rx,o= -- "$build_artifact"
+run_site_command chmod u=rwx,g=rx,o= -- "$build_artifact"
 [[ $build_artifact == "$site_root"/.stepanel-build.* && -d $build_artifact && ! -L $build_artifact ]] || { echo 'build directory is not a directory' >&2; exit 1; }
 build_uid=$(stat -c '%u' -- "$build_artifact")
 build_gid=$(stat -c '%g' -- "$build_artifact")
@@ -303,27 +350,12 @@ build_gid=$(stat -c '%g' -- "$build_artifact")
 # what matters.
 site_root_gid=$(stat -c '%g' -- "$site_root")
 [[ $build_uid == "$site_uid" && ( $build_gid == "$site_gid" || $build_gid == "$site_root_gid" ) ]] || { echo 'build directory has unexpected ownership' >&2; exit 1; }
-# The submitted script lives in STEPANEL_APP_ROOT, which is owned by the
-# stepanel service account (0750/0600). The isolated sp-* site account that
-# rootless Podman drops to is not in that group and cannot traverse into
-# stepanel's data dir or read a 0600 stepanel:stepanel file, so bind-mounting
-# the submitted path directly would fail with EACCES inside the container.
-# Copy the contents into a site-owned scratch path first and bind-mount that.
-scratch="$site_root/.stepanel-runner-scratch"
-runuser -u "$site_user" -- install -d -m 0700 "$scratch"
-# The EXIT trap (cleanup_runner) destroys the site-owned scratch tree on any
-# exit after this point, including mid-setup failures. Deletion runs as the site account, so no root
-# rm -rf ever touches a customer path.
-scratch_uid=$(stat -c '%u' -- "$scratch")
-scratch_gid=$(stat -c '%g' -- "$scratch")
-[[ $scratch_uid == "$site_uid" && ( $scratch_gid == "$site_gid" || $scratch_gid == "$site_root_gid" ) ]] || { echo 'scratch directory has unexpected ownership' >&2; exit 1; }
-build_script="$scratch/build.sh"
-# Create the file writable, stream contents in as the site account, then drop
-# write on it. 0500 = r-x for owner only, matching the container's read-only
-# mount and preventing accidental in-place mutation.
-runuser -u "$site_user" -- install -m 0600 /dev/null "$build_script"
-cat -- "$script" | runuser -u "$site_user" -- tee "$build_script" >/dev/null
-runuser -u "$site_user" -- chmod 0500 "$build_script"
+# The submitted script is panel-owned and inaccessible to the isolated site
+# account. Stage a read-only copy under /run, readable only by the site's
+# private primary group; never expose customer build contents to other local
+# accounts or copy them into the mutable document root.
+build_script="$runner_script"
+[[ $(stat -c '%u:%g:%a' -- "$build_script") == "0:$site_gid:640" ]] || { echo 'runner script has unexpected ownership or mode' >&2; exit 1; }
 # Build from a copy of the source. The container mounts use :Z so SELinux
 # gives them a private container label; mounting the live document root (or
 # a release about to be published) that way would relabel served files and
@@ -363,14 +395,14 @@ fi
 if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled && command -v restorecon >/dev/null 2>&1; then
   restorecon -R -F -x -- "$build_artifact" || { echo 'could not restore SELinux labels on the build artifact' >&2; exit 1; }
 fi
-# Promote the successful build. Renames run as the site account inside its own
-# tree; the superseded artifact is deleted only after the new one is in place.
+# Promote the successful build. Renames run as the site account in a scoped
+# systemd unit; the superseded artifact is deleted only after publication.
 superseded=
 if [[ -e $artifact || -L $artifact ]]; then
   superseded="$build_artifact.superseded"
-  runuser -u "$site_user" -- mv -T -- "$artifact" "$superseded"
+  run_site_command mv -T -- "$artifact" "$superseded"
 fi
-runuser -u "$site_user" -- mv -T -- "$build_artifact" "$artifact"
+run_site_command mv -T -- "$build_artifact" "$artifact"
 build_artifact=
-[[ -z $superseded ]] || runuser -u "$site_user" -- rm -rf -- "$superseded"
+[[ -z $superseded ]] || run_site_command rm -rf -- "$superseded"
 exit 0

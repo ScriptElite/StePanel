@@ -34,6 +34,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- Execute the runner's site-account filesystem commands through narrowly
+  scoped systemd transient units instead of direct `runuser` transitions.
+  The direct-root permission smoke did not reproduce the failure that occurred
+  in a broker-backed release pipeline on Ubuntu; runner scripts are now staged
+  under `/run` with access limited to the site's private group.
 - Filter site-scoped backup candidates from bounded manifests and validate
   configured signatures before checking archive contents. The real-host
   recovery matrix measured

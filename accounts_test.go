@@ -2,6 +2,7 @@ package stepanel
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -869,5 +870,103 @@ func TestSessionRevocationRestoresMemoryOnPersistenceFailure(t *testing.T) {
 	}
 	if !registry.valid("customer-session", "customer", expiry) {
 		t.Fatal("failed single-session revocation was not rolled back in memory")
+	}
+}
+
+// openSharedAccountStores opens two stores on one control-plane database, as
+// the panel and the job worker do, after creating two accounts.
+func openSharedAccountStores(t *testing.T) (*AccountStore, *AccountStore) {
+	t.Helper()
+	db, err := openControlPlaneDB(filepath.Join(t.TempDir(), "control-plane.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	panel, err := OpenAccountStoreDB(db, "", "account-encryption-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := panel.Create("customer", "a sufficiently long customer password", testTOTPSecret, "starter", []string{"site-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := panel.Create("other", "another sufficiently long customer password", testTOTPSecret, "starter", []string{"site-b"}); err != nil {
+		t.Fatal(err)
+	}
+	worker, err := OpenAccountStoreDB(db, "", "account-encryption-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return panel, worker
+}
+
+func TestStaleAccountStorePersistsOnlyItsOwnChange(t *testing.T) {
+	panel, worker := openSharedAccountStores(t)
+	if _, err := panel.Update("customer", "professional", []string{"site-a", "site-c"}); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the worker mutating between its refresh and its write: its
+	// cache still holds the old "customer" row.
+	worker.mu.Lock()
+	other := worker.accounts["other"]
+	other.Suspended = true
+	worker.accounts["other"] = other
+	err := worker.persistLocked()
+	worker.mu.Unlock()
+	if err != nil {
+		t.Fatalf("persist unrelated change from stale store: %v", err)
+	}
+	reopened, err := OpenAccountStoreDB(panel.db, "", "account-encryption-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	customer, _ := reopened.Get("customer")
+	if customer.Plan != "professional" || len(customer.Sites) != 2 {
+		t.Fatalf("stale store overwrote a concurrent account change: %#v", customer)
+	}
+	if owner, ok := reopened.OwnerOfSite("site-c"); !ok || owner != "customer" {
+		t.Fatalf("site-c owner = %q, %v; want customer", owner, ok)
+	}
+	if updated, _ := reopened.Get("other"); !updated.Suspended {
+		t.Fatal("stale store's own change was not persisted")
+	}
+}
+
+func TestStaleAccountStoreConflictingChangeIsRejected(t *testing.T) {
+	panel, worker := openSharedAccountStores(t)
+	if _, err := panel.Update("customer", "professional", []string{"site-a"}); err != nil {
+		t.Fatal(err)
+	}
+	worker.mu.Lock()
+	customer := worker.accounts["customer"]
+	customer.Plan = "enterprise"
+	worker.accounts["customer"] = customer
+	err := worker.persistLocked()
+	worker.mu.Unlock()
+	if !errors.Is(err, errAccountStateConflict) {
+		t.Fatalf("stale write error = %v, want account state conflict", err)
+	}
+	reopened, err := OpenAccountStoreDB(panel.db, "", "account-encryption-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := reopened.Get("customer"); got.Plan != "professional" {
+		t.Fatalf("conflicting stale write replaced plan with %q", got.Plan)
+	}
+}
+
+func TestStaleAccountStoreCannotClaimReassignedSite(t *testing.T) {
+	panel, worker := openSharedAccountStores(t)
+	if _, err := panel.Update("customer", "professional", []string{"site-a", "site-c"}); err != nil {
+		t.Fatal(err)
+	}
+	worker.mu.Lock()
+	other := worker.accounts["other"]
+	other.Plan = "professional"
+	other.Sites = append(other.Sites, "site-c")
+	worker.accounts["other"] = other
+	err := worker.persistLocked()
+	worker.mu.Unlock()
+	if !errors.Is(err, errAccountStateConflict) {
+		t.Fatalf("stale claim of an owned site error = %v, want conflict", err)
 	}
 }

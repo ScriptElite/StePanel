@@ -23,6 +23,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- Account persistence on the control-plane database now writes only the
+  accounts and site assignments a mutation changed, each guarded by the row
+  payload the process last read, instead of deleting and reinserting every
+  account and tenant site. The panel and job worker could previously
+  overwrite each other's concurrent account changes; a conflicting write now
+  fails with a retryable error. Full rewrites remain only for startup
+  migrations and the file-backed store.
 - Deployment history is now appended with a revision compare-and-swap and
   read from the control-plane database on every listing. The panel and the
   job worker each cached the whole history and overwrote the shared row on

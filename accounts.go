@@ -107,12 +107,18 @@ func accountRole(account HostingAccount) string {
 // credentials remain environment-managed and are deliberately never copied to
 // this file.
 type AccountStore struct {
-	mu                    sync.RWMutex
-	path                  string
-	db                    *sql.DB
-	key                   []byte // pre-v2 key: SHA-256 of the account key
-	box                   *secretbox.Box
-	accounts              map[string]HostingAccount
+	mu       sync.RWMutex
+	path     string
+	db       *sql.DB
+	key      []byte // pre-v2 key: SHA-256 of the account key
+	box      *secretbox.Box
+	accounts map[string]HostingAccount
+	// rows records, per account, the exact durable payload this process last
+	// read or wrote and the plaintext image it decoded to. Mutations write
+	// only accounts whose image changed, and only while the durable row still
+	// holds that payload, so a concurrent change made by another StePanel
+	// process is detected instead of overwritten.
+	rows                  map[string]accountRow
 	administratorUsername string
 	// legacyTOTP permits reading TOTP seeds sealed without binding to their
 	// username until the store has been migrated; legacyTOTPSeen records
@@ -210,7 +216,7 @@ func OpenAccountStore(path string, accountKey ...string) (*AccountStore, error) 
 // account and site-ownership store. legacyPath is imported only when the
 // database has no account rows.
 func OpenAccountStoreDB(db *sql.DB, legacyPath string, accountKey ...string) (*AccountStore, error) {
-	store := &AccountStore{db: db, accounts: make(map[string]HostingAccount), administratorUsername: "admin"}
+	store := &AccountStore{db: db, accounts: make(map[string]HostingAccount), rows: make(map[string]accountRow), administratorUsername: "admin"}
 	if err := store.configureAccountKey(accountKey); err != nil {
 		return nil, err
 	}
@@ -248,7 +254,7 @@ func OpenAccountStoreDB(db *sql.DB, legacyPath string, accountKey ...string) (*A
 				store.accounts[username] = account
 			}
 			if len(store.accounts) > 0 {
-				if err := store.persistLocked(); err != nil {
+				if err := store.persistAllLocked(); err != nil {
 					return nil, fmt.Errorf("migrate legacy account state: %w", err)
 				}
 			}
@@ -275,6 +281,11 @@ func OpenAccountStoreDB(db *sql.DB, legacyPath string, accountKey ...string) (*A
 			if err := store.addLoadedAccount(account); err != nil {
 				return nil, err
 			}
+			image, err := accountImage(store.accounts[account.Username])
+			if err != nil {
+				return nil, err
+			}
+			store.rows[account.Username] = accountRow{payload: payload, image: image}
 		}
 	}
 	if len(store.accounts) > 0 {
@@ -283,7 +294,7 @@ func OpenAccountStoreDB(db *sql.DB, legacyPath string, accountKey ...string) (*A
 			return nil, fmt.Errorf("inspect durable site ownership: %w", err)
 		}
 		if ownershipCount == 0 {
-			if err := store.persistLocked(); err != nil {
+			if err := store.persistAllLocked(); err != nil {
 				return nil, fmt.Errorf("migrate durable site ownership: %w", err)
 			}
 		}
@@ -292,7 +303,7 @@ func OpenAccountStoreDB(db *sql.DB, legacyPath string, accountKey ...string) (*A
 		// Re-seal legacy TOTP seeds bound to their usernames, then refuse the
 		// legacy format from now on.
 		if store.legacyTOTPSeen.Load() {
-			if err := store.persistLocked(); err != nil {
+			if err := store.persistAllLocked(); err != nil {
 				return nil, fmt.Errorf("re-seal account TOTP seeds: %w", err)
 			}
 		}
@@ -374,6 +385,7 @@ func (s *AccountStore) refreshFromDBLocked() error {
 	}
 	defer rows.Close()
 	refreshed := make(map[string]HostingAccount)
+	refreshedRows := make(map[string]accountRow)
 	for rows.Next() {
 		var payload []byte
 		if err := rows.Scan(&payload); err != nil {
@@ -406,6 +418,11 @@ func (s *AccountStore) refreshFromDBLocked() error {
 			return fmt.Errorf("duplicate durable account %q", account.Username)
 		}
 		refreshed[account.Username] = account
+		image, err := accountImage(account)
+		if err != nil {
+			return err
+		}
+		refreshedRows[account.Username] = accountRow{payload: payload, image: image}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate durable account state: %w", err)
@@ -421,6 +438,7 @@ func (s *AccountStore) refreshFromDBLocked() error {
 		}
 	}
 	s.accounts = refreshed
+	s.rows = refreshedRows
 	return nil
 }
 
@@ -1263,21 +1281,221 @@ func (s *AccountStore) SetTOTP(username, secret string) (HostingAccount, error) 
 	return account, nil
 }
 
-func (s *AccountStore) persistLocked() error {
+// errAccountStateConflict reports that another StePanel process changed an
+// account row after this process read it. The mutation is not applied; the
+// caller's next operation starts from the refreshed durable image.
+var errAccountStateConflict = errors.New("account state was changed by another StePanel process; retry the operation")
+
+type accountRow struct {
+	payload []byte
+	image   []byte
+}
+
+// accountImage is the canonical plaintext encoding used to detect whether a
+// cached account differs from its durable row. The durable payload cannot be
+// compared directly: sealing a TOTP seed uses a fresh nonce each time.
+func accountImage(account HostingAccount) ([]byte, error) {
+	image, err := json.Marshal(account)
+	if err != nil {
+		return nil, fmt.Errorf("encode account %s: %w", account.Username, err)
+	}
+	return image, nil
+}
+
+func (s *AccountStore) sealedAccounts() ([]HostingAccount, error) {
 	accounts := make([]HostingAccount, 0, len(s.accounts))
 	for _, account := range s.accounts {
-		persisted := account
-		if len(s.key) > 0 && account.TOTPSecret != "" {
-			encrypted, err := s.sealTOTP(account.Username, account.TOTPSecret)
-			if err != nil {
-				return err
-			}
-			persisted.TOTPSecret, persisted.TOTPEncrypted = encrypted, true
+		persisted, err := s.sealedAccount(account)
+		if err != nil {
+			return nil, err
 		}
 		accounts = append(accounts, persisted)
 	}
 	sort.Slice(accounts, func(i, j int) bool { return accounts[i].Username < accounts[j].Username })
+	return accounts, nil
+}
+
+func (s *AccountStore) sealedAccount(account HostingAccount) (HostingAccount, error) {
+	if len(s.key) > 0 && account.TOTPSecret != "" {
+		encrypted, err := s.sealTOTP(account.Username, account.TOTPSecret)
+		if err != nil {
+			return HostingAccount{}, err
+		}
+		account.TOTPSecret, account.TOTPEncrypted = encrypted, true
+	}
+	return account, nil
+}
+
+// persistLocked makes the cached account changes durable. With a control
+// plane database, only changed accounts and their site assignments are
+// written, each guarded by the row payload this process last observed.
+func (s *AccountStore) persistLocked() error {
+	if s.db == nil {
+		return s.persistAllLocked()
+	}
+	return s.persistChangedLocked()
+}
+
+func (s *AccountStore) persistChangedLocked() error {
+	type change struct {
+		username    string
+		previous    *HostingAccount
+		next        *HostingAccount
+		previousRow accountRow
+	}
+	var changes []change
+	for username, account := range s.accounts {
+		image, err := accountImage(account)
+		if err != nil {
+			return err
+		}
+		row, existed := s.rows[username]
+		if existed && string(row.image) == string(image) {
+			continue
+		}
+		next := account
+		item := change{username: username, next: &next, previousRow: row}
+		if existed {
+			var previous HostingAccount
+			if err := json.Unmarshal(row.image, &previous); err != nil {
+				return fmt.Errorf("decode cached account %s: %w", username, err)
+			}
+			item.previous = &previous
+		}
+		changes = append(changes, item)
+	}
+	for username, row := range s.rows {
+		if _, exists := s.accounts[username]; exists {
+			continue
+		}
+		var previous HostingAccount
+		if err := json.Unmarshal(row.image, &previous); err != nil {
+			return fmt.Errorf("decode cached account %s: %w", username, err)
+		}
+		changes = append(changes, change{username: username, previous: &previous, previousRow: row})
+	}
+	if len(changes) == 0 {
+		return nil
+	}
+	sort.Slice(changes, func(i, j int) bool { return changes[i].username < changes[j].username })
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin durable account transaction: %w", err)
+	}
+	fail := func(err error) error {
+		_ = tx.Rollback()
+		return err
+	}
+	expectOne := func(result sql.Result, err error, what string) error {
+		if err != nil {
+			return fmt.Errorf("%s: %w", what, err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("%s: %w", what, err)
+		}
+		if changed != 1 {
+			return errAccountStateConflict
+		}
+		return nil
+	}
+	// Release site assignments before claiming new ones, so a site moved
+	// between two accounts in one operation does not collide with itself.
+	for _, item := range changes {
+		if item.previous == nil {
+			continue
+		}
+		kept := map[string]bool{}
+		if item.next != nil && accountTenantID(*item.next) == accountTenantID(*item.previous) {
+			for _, site := range item.next.Sites {
+				kept[site] = true
+			}
+		}
+		for _, site := range item.previous.Sites {
+			if kept[site] {
+				continue
+			}
+			// The guarded account write below detects a concurrent change to
+			// this account; a missing assignment row needs no release.
+			if _, err := tx.Exec(`DELETE FROM tenant_sites WHERE site = ? AND username = ?`, site, accountTenantID(*item.previous)); err != nil {
+				return fail(fmt.Errorf("release durable site ownership %s: %w", site, err))
+			}
+		}
+	}
+	written := make(map[string]accountRow, len(changes))
+	for _, item := range changes {
+		if item.next == nil {
+			result, err := tx.Exec(`DELETE FROM accounts WHERE username = ? AND payload = ?`, item.username, item.previousRow.payload)
+			if err := expectOne(result, err, "remove durable account "+item.username); err != nil {
+				return fail(err)
+			}
+			continue
+		}
+		sealed, err := s.sealedAccount(*item.next)
+		if err != nil {
+			return fail(err)
+		}
+		payload, err := json.Marshal(sealed)
+		if err != nil {
+			return fail(fmt.Errorf("encode durable account %s: %w", item.username, err))
+		}
+		var result sql.Result
+		if item.previous == nil {
+			result, err = tx.Exec(`INSERT INTO accounts (username, payload, updated_at) VALUES (?, ?, unixepoch()) ON CONFLICT(username) DO NOTHING`, item.username, payload)
+		} else {
+			result, err = tx.Exec(`UPDATE accounts SET payload = ?, updated_at = unixepoch() WHERE username = ? AND payload = ?`, payload, item.username, item.previousRow.payload)
+		}
+		if err := expectOne(result, err, "write durable account "+item.username); err != nil {
+			return fail(err)
+		}
+		held := map[string]bool{}
+		if item.previous != nil && accountTenantID(*item.previous) == accountTenantID(*item.next) {
+			for _, site := range item.previous.Sites {
+				held[site] = true
+			}
+		}
+		for _, site := range item.next.Sites {
+			if held[site] {
+				continue
+			}
+			result, err := tx.Exec(`INSERT INTO tenant_sites (site, username, updated_at) VALUES (?, ?, unixepoch()) ON CONFLICT(site) DO NOTHING`, site, accountTenantID(*item.next))
+			if err := expectOne(result, err, "write durable site ownership "+site); err != nil {
+				return fail(err)
+			}
+		}
+		image, err := accountImage(*item.next)
+		if err != nil {
+			return fail(err)
+		}
+		written[item.username] = accountRow{payload: payload, image: image}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit durable account state: %w", err)
+	}
+	if s.rows == nil {
+		s.rows = make(map[string]accountRow)
+	}
+	for _, item := range changes {
+		if item.next == nil {
+			delete(s.rows, item.username)
+		} else {
+			s.rows[item.username] = written[item.username]
+		}
+	}
+	return nil
+}
+
+// persistAllLocked rewrites the complete account state. It is used for the
+// file-backed store and for one-time database migrations at startup, before
+// any other process can be serving mutations from this state.
+func (s *AccountStore) persistAllLocked() error {
+	accounts, err := s.sealedAccounts()
+	if err != nil {
+		return err
+	}
 	if s.db != nil {
+		rows := make(map[string]accountRow, len(accounts))
 		tx, err := s.db.Begin()
 		if err != nil {
 			return fmt.Errorf("begin durable account transaction: %w", err)
@@ -1306,10 +1524,17 @@ func (s *AccountStore) persistLocked() error {
 					return fmt.Errorf("write durable site ownership %s: %w", site, err)
 				}
 			}
+			image, err := accountImage(s.accounts[account.Username])
+			if err != nil {
+				_ = tx.Rollback()
+				return err
+			}
+			rows[account.Username] = accountRow{payload: data, image: image}
 		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit durable account state: %w", err)
 		}
+		s.rows = rows
 		return nil
 	}
 	data, err := json.MarshalIndent(accounts, "", "  ")

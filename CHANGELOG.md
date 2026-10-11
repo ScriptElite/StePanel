@@ -15,6 +15,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- Strengthened the termination backup-schedule regression test to exercise the
+  actual journaled task-cleanup hook, reload durable schedule state after a
+  simulated restart, and prove site-name reuse does not enqueue a stale
+  backup; a newly configured schedule still enqueues normally.
 - Increased the Ubuntu quota-install smoke deadline after the 2026-10-11 guest
   run reached the end-to-end application lifecycle checks but was terminated
   by the former 45-minute SSH timeout (exit 124). The job now allows 60 minutes

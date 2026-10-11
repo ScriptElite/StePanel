@@ -74,9 +74,10 @@ func TestBackupScheduleDeleteRollsBackWhenPersistenceFails(t *testing.T) {
 	}
 }
 
-func TestTerminationRemovesBackupScheduleBeforeFutureSchedulerTick(t *testing.T) {
+func TestTerminationRemovesBackupScheduleAcrossRestartAndSiteReuse(t *testing.T) {
 	root := t.TempDir()
-	store, err := openBackupSchedules(filepath.Join(root, "schedules.json"))
+	schedulePath := filepath.Join(root, "schedules.json")
+	store, err := openBackupSchedules(schedulePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,15 +85,46 @@ func TestTerminationRemovesBackupScheduleBeforeFutureSchedulerTick(t *testing.T)
 		Site: "demo", IntervalMinutes: 60, KeepLast: 7, Enabled: true,
 		NextRun: time.Now().UTC().Add(-time.Minute),
 	}
-	app := &App{Schedules: store, Jobs: NewJobs()}
-	if err := app.removeSiteBackupSchedule(context.Background(), "demo"); err != nil {
-		t.Fatalf("remove schedule during termination: %v", err)
+	if err := store.persistLocked(); err != nil {
+		t.Fatal(err)
 	}
-	app.runDueBackups()
-	if _, exists := store.items["demo"]; exists {
-		t.Fatal("terminated site's backup schedule survived the scheduler tick")
+	terminator := &terminationHost{app: &App{Schedules: store}, site: "demo"}
+	if err := terminator.RemoveTasks(context.Background()); err != nil {
+		t.Fatalf("remove scheduled work during termination: %v", err)
 	}
-	if _, err := openBackupSchedules(filepath.Join(root, "schedules.json")); err != nil {
-		t.Fatalf("schedule removal was not durable across restart: %v", err)
+
+	// A process restart must not reload the deleted site's due schedule. If the
+	// name is reused later, no backup is queued until an operator explicitly
+	// creates a new schedule for the recreated site.
+	restartedSchedules, err := openBackupSchedules(schedulePath)
+	if err != nil {
+		t.Fatalf("reload schedule state after termination: %v", err)
+	}
+	recreatedRoot := filepath.Join(root, "sites", "demo", "public")
+	if err := os.MkdirAll(recreatedRoot, 0750); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := OpenDurableJobs(filepath.Join(root, "control.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jobs.Close()
+	restarted := &App{Schedules: restartedSchedules, Jobs: jobs}
+	restarted.runDueBackups()
+	if len(jobs.List(10)) != 0 {
+		t.Fatal("stale schedule queued a backup after restart and site-name reuse")
+	}
+	if _, exists := restartedSchedules.items["demo"]; exists {
+		t.Fatal("terminated site's schedule reappeared after restart")
+	}
+
+	newSchedule := BackupSchedule{Site: "demo", IntervalMinutes: 60, KeepLast: 7, Enabled: true, NextRun: time.Now().UTC().Add(-time.Minute)}
+	if err := persistMapKeyChange(restartedSchedules.items, "demo", &newSchedule, restartedSchedules.persistLocked); err != nil {
+		t.Fatal(err)
+	}
+	restarted.runDueBackups()
+	queued := jobs.List(10)
+	if len(queued) != 1 || queued[0].Kind != "site.backup" || queued[0].User != "demo" {
+		t.Fatalf("explicitly recreated schedule did not enqueue exactly one site backup: %#v", queued)
 	}
 }

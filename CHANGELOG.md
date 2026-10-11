@@ -23,6 +23,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- Release activation is now an explicit commit point for Git deployments,
+  pipeline releases, and Git rollbacks. Losing the mutation lock after the
+  release went live previously returned HTTP 409, so the durable job failed
+  (and Git deployments left history at "running") while the release served
+  traffic. The response now reports `outcome` as `activated` or
+  `committed_reconciliation_pending` with the `activated_release`, history
+  records the completed activation, and release retention is deferred when
+  the lock was lost. Rollbacks are now recorded in deployment history.
 - Account persistence on the control-plane database now writes only the
   accounts and site assignments a mutation changed, each guarded by the row
   payload the process last read, instead of deleting and reinserting every

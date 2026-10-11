@@ -152,9 +152,45 @@ type gitDeployResult struct {
 	Ref          string `json:"ref"`
 	Commit       string `json:"commit"`
 	Previous     string `json:"previous_release,omitempty"`
+	// Activated names the release directory that is live once activation
+	// has committed.
+	Activated string `json:"activated_release,omitempty"`
+	// Outcome is releaseOutcomeActivated or
+	// releaseOutcomeReconciliationPending once the release is live.
+	Outcome string `json:"outcome,omitempty"`
 	// HistoryError is set when the host change succeeded but its deployment
 	// history record could not be persisted.
 	HistoryError string `json:"history_error,omitempty"`
+}
+
+// Activation is the commit point of a deployment or rollback: once the site
+// serves the new release, the operation must never be reported as failed or
+// cancelled, or an operator could retry a change that is already live. If the
+// mutation lock or request context is lost after activation, the release is
+// still reported as committed, and lock-dependent follow-up work (release
+// retention) is left for the next locked operation.
+const (
+	releaseOutcomeActivated             = "activated"
+	releaseOutcomeReconciliationPending = "committed_reconciliation_pending"
+)
+
+// finishCommittedRelease records the outcome of a release that activation
+// has already made live.
+func (a *App) finishCommittedRelease(ctx context.Context, siteRoot, stage, detail, release string, result *gitDeployResult, prune bool) {
+	result.Activated = filepath.Base(release)
+	result.Outcome = releaseOutcomeActivated
+	if ctx.Err() != nil {
+		result.Outcome = releaseOutcomeReconciliationPending
+		detail += "; mutation lock lost after activation, release retention deferred"
+	} else if prune {
+		if err := pruneGitReleasesWithPolicy(siteRoot, a.Config.GitReleaseRetention, time.Duration(a.Config.GitReleaseMaxAgeHours)*time.Hour, a.Config.GitReleaseMaxBytes); err != nil {
+			log.Printf("Git release retention for %s: %v", result.Site, err)
+		}
+	}
+	if err := a.recordDeployment(result.Site, stage, "completed", detail, *result, release); err != nil {
+		// The release is live; say so rather than reporting a failed deploy.
+		result.HistoryError = "release activated but deployment history was not persisted: " + err.Error()
+	}
 }
 
 type gitRollbackRequest struct {
@@ -749,18 +785,8 @@ func (a *App) gitDeploy(w http.ResponseWriter, r *http.Request) {
 	// can return early.
 	deployed = true
 	intent.Completed(input.Repository + "@" + commit)
-	if err := operationCtx.Err(); err != nil {
-		http.Error(w, "Git activation cancelled because the mutation lock was lost", http.StatusConflict)
-		return
-	}
 	result.Previous = previous
-	if err := pruneGitReleasesWithPolicy(siteRoot, a.Config.GitReleaseRetention, time.Duration(a.Config.GitReleaseMaxAgeHours)*time.Hour, a.Config.GitReleaseMaxBytes); err != nil {
-		log.Printf("Git release retention for %s: %v", input.Site, err)
-	}
-	if err := a.recordDeployment(input.Site, "activation", "completed", "atomic Git release activated", result, ""); err != nil {
-		// The release is live; say so rather than reporting a failed deploy.
-		result.HistoryError = "release activated but deployment history was not persisted: " + err.Error()
-	}
+	a.finishCommittedRelease(operationCtx, siteRoot, "activation", "atomic Git release activated", release, &result, true)
 	writeJSON(w, http.StatusAccepted, result)
 }
 
@@ -812,6 +838,12 @@ func (a *App) gitRollback(w http.ResponseWriter, r *http.Request) {
 		refuseWithoutSecurityAudit(w)
 		return
 	}
+	deploymentID, err := newJobID("deployment")
+	if err != nil {
+		intent.Failed("could not create deployment identity")
+		http.Error(w, "could not create deployment identity", http.StatusInternalServerError)
+		return
+	}
 	replaced, err := a.activatePipelineRelease(operationCtx, input.Site, previous)
 	if err != nil {
 		intent.Failed(err.Error())
@@ -819,14 +851,13 @@ func (a *App) gitRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	intent.Completed(filepath.Base(previous))
-	if err := operationCtx.Err(); err != nil {
-		http.Error(w, "Git rollback cancelled because the mutation lock was lost", http.StatusConflict)
-		return
+	result := gitDeployResult{DeploymentID: deploymentID, Site: input.Site, Previous: filepath.Base(replaced)}
+	a.finishCommittedRelease(operationCtx, siteRoot, "rollback", "rolled back to an earlier Git release", previous, &result, true)
+	response := map[string]string{"site": input.Site, "activated": result.Activated, "replaced_release": filepath.Base(replaced), "deployment_id": deploymentID, "outcome": result.Outcome}
+	if result.HistoryError != "" {
+		response["history_error"] = result.HistoryError
 	}
-	if err := pruneGitReleasesWithPolicy(siteRoot, a.Config.GitReleaseRetention, time.Duration(a.Config.GitReleaseMaxAgeHours)*time.Hour, a.Config.GitReleaseMaxBytes); err != nil {
-		log.Printf("Git release retention for %s: %v", input.Site, err)
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"site": input.Site, "activated": filepath.Base(previous), "replaced_release": filepath.Base(replaced)})
+	writeJSON(w, http.StatusOK, response)
 }
 
 func pruneGitReleases(siteRoot string, retain int) error {

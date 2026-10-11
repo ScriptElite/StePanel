@@ -178,15 +178,7 @@ func (a *App) releasePipeline(w http.ResponseWriter, r *http.Request) {
 	}
 	outcome = input.Repository + "@" + commit
 	result.Previous = previous
-	if err := a.recordDeployment(input.Site, "activation", "completed", "atomic built release activated", result, ""); err != nil {
-		// The release is live; say so rather than reporting a failed deploy.
-		result.HistoryError = "release activated but deployment history was not persisted: " + err.Error()
-	}
-	if err := operationCtx.Err(); err != nil {
-		http.Error(w, "release cancelled because the mutation lock was lost", http.StatusConflict)
-		return
-	}
-
+	a.finishCommittedRelease(operationCtx, siteRoot, "activation", "atomic built release activated", release, &result, false)
 	writeJSON(w, 202, result)
 }
 

@@ -204,6 +204,9 @@ func TestGitRollbackAtomicallySwapsPreviousRelease(t *testing.T) {
 	if response.Code != http.StatusOK || err != nil || string(data) != "previous" {
 		t.Fatalf("status = %d, active = %q, error = %v, body = %s", response.Code, data, err, response.Body.String())
 	}
+	if !strings.Contains(response.Body.String(), `"outcome":"activated"`) {
+		t.Fatalf("rollback response does not report the committed outcome: %s", response.Body.String())
+	}
 	entries, err := os.ReadDir(siteRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -485,5 +488,41 @@ func TestAuthenticatedWebhookCopiesPolicy(t *testing.T) {
 	config.AllowedRefs[0] = "changed"
 	if auth.Repositories[0] != "a" || auth.AllowedRefs[0] != "main" {
 		t.Fatalf("authorization aliases mutable config: %+v", auth)
+	}
+}
+
+func TestCommittedReleaseIsNeverReportedAsCancelled(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		cancel  bool
+		outcome string
+	}{
+		{name: "lock held", outcome: releaseOutcomeActivated},
+		{name: "lock lost after activation", cancel: true, outcome: releaseOutcomeReconciliationPending},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			deployments, err := OpenDeploymentStore(filepath.Join(root, "deployments.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			app := &App{Config: Config{GitReleaseRetention: 3}, Deployments: deployments}
+			ctx, cancel := context.WithCancel(context.Background())
+			if test.cancel {
+				cancel()
+			} else {
+				defer cancel()
+			}
+			release := filepath.Join(root, "sites", "example", ".stepanel-release-abc")
+			result := gitDeployResult{DeploymentID: "deployment-1", Site: "example", Commit: "abc"}
+			app.finishCommittedRelease(ctx, filepath.Join(root, "sites", "example"), "activation", "activated", release, &result, true)
+			if result.Outcome != test.outcome || result.Activated != ".stepanel-release-abc" || result.HistoryError != "" {
+				t.Fatalf("result = %#v, want outcome %q for the live release", result, test.outcome)
+			}
+			records := deployments.list("example")
+			if len(records) != 1 || records[0].State != "completed" || records[0].Artifact != release {
+				t.Fatalf("history = %#v, want one completed activation of the live release", records)
+			}
+		})
 	}
 }

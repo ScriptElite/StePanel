@@ -39,6 +39,7 @@ var (
 	auditOpenFile   = os.OpenFile
 	auditChmod      = func(file *os.File, mode os.FileMode) error { return file.Chmod(mode) }
 	auditWrite      = func(file *os.File, data []byte) (int, error) { return file.Write(data) }
+	auditLockWrite  = func(file *os.File, data []byte) (int, error) { return file.Write(data) }
 	auditSync       = func(file *os.File) error { return file.Sync() }
 	auditClose      = func(file *os.File) error { return file.Close() }
 	auditLockSleep  = time.Sleep
@@ -229,9 +230,15 @@ func createAuditLock(lockPath string) (func() error, error) {
 	}
 	tempPath := temp.Name()
 	defer os.Remove(tempPath)
-	if _, err := fmt.Fprintf(temp, "%d %d %s", os.Getpid(), processStartTime(os.Getpid()), kernelBootID()); err != nil {
+	metadata := fmt.Sprintf("%d %d %s", os.Getpid(), processStartTime(os.Getpid()), kernelBootID())
+	written, writeErr := auditLockWrite(temp, []byte(metadata))
+	if writeErr != nil {
 		_ = temp.Close()
-		return nil, fmt.Errorf("write audit lock metadata: %w", err)
+		return nil, fmt.Errorf("write audit lock metadata: %w", writeErr)
+	}
+	if written != len(metadata) {
+		_ = temp.Close()
+		return nil, errors.New("write audit lock metadata: short write")
 	}
 	if err := auditSync(temp); err != nil {
 		_ = temp.Close()

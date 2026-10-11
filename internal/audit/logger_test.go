@@ -986,6 +986,113 @@ func TestAuditLockPublishesCompleteOwnerMetadata(t *testing.T) {
 	}
 }
 
+func TestCreateAuditLockRejectsMissingDirectory(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "missing", "audit.lock")
+	if unlock, err := createAuditLock(lockPath); err == nil {
+		if unlock != nil {
+			_ = unlock()
+		}
+		t.Fatal("created audit lock when its parent directory did not exist")
+	}
+}
+
+func TestCreateAuditLockDoesNotReplaceExistingLock(t *testing.T) {
+	root := t.TempDir()
+	lockPath := filepath.Join(root, "audit.lock")
+	want := []byte("existing owner")
+	if err := os.WriteFile(lockPath, want, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if unlock, err := createAuditLock(lockPath); err == nil {
+		if unlock != nil {
+			_ = unlock()
+		}
+		t.Fatal("created audit lock over an existing owner's lock")
+	}
+	got, err := os.ReadFile(lockPath)
+	if err != nil || string(got) != string(want) {
+		t.Fatalf("existing lock changed: data=%q err=%v", got, err)
+	}
+}
+
+func TestCreateAuditLockSyncFailureDoesNotPublish(t *testing.T) {
+	root := t.TempDir()
+	lockPath := filepath.Join(root, "audit.lock")
+	originalSync := auditSync
+	auditSync = func(*os.File) error { return errors.New("injected sync failure") }
+	t.Cleanup(func() { auditSync = originalSync })
+	if _, err := createAuditLock(lockPath); err == nil || !strings.Contains(err.Error(), "sync audit lock metadata") {
+		t.Fatalf("createAuditLock error = %v, want metadata sync failure", err)
+	}
+	if _, err := os.Lstat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed lock was published: stat err=%v", err)
+	}
+}
+
+func TestCreateAuditLockWriteFailuresDoNotPublish(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		write func(*os.File, []byte) (int, error)
+	}{
+		{name: "write error", write: func(*os.File, []byte) (int, error) { return 0, errors.New("injected write failure") }},
+		{name: "short write", write: func(_ *os.File, data []byte) (int, error) { return len(data) - 1, nil }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			lockPath := filepath.Join(root, "audit.lock")
+			originalWrite := auditLockWrite
+			auditLockWrite = test.write
+			t.Cleanup(func() { auditLockWrite = originalWrite })
+			if _, err := createAuditLock(lockPath); err == nil || !strings.Contains(err.Error(), "write audit lock metadata") {
+				t.Fatalf("createAuditLock error = %v, want metadata write failure", err)
+			}
+			if _, err := os.Lstat(lockPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("failed lock was published: stat err=%v", err)
+			}
+		})
+	}
+}
+
+func TestCreateAuditLockCloseFailureDoesNotPublish(t *testing.T) {
+	root := t.TempDir()
+	lockPath := filepath.Join(root, "audit.lock")
+	originalClose := auditClose
+	auditClose = func(file *os.File) error {
+		_ = file.Close()
+		return errors.New("injected close failure")
+	}
+	t.Cleanup(func() { auditClose = originalClose })
+	if _, err := createAuditLock(lockPath); err == nil || !strings.Contains(err.Error(), "close audit lock metadata") {
+		t.Fatalf("createAuditLock error = %v, want metadata close failure", err)
+	}
+	if _, err := os.Lstat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed lock was published: stat err=%v", err)
+	}
+}
+
+func TestAuditLockReleasePreservesReplacement(t *testing.T) {
+	logger, _ := newTestLogger(t)
+	lockPath := logger.path + ".lock"
+	unlock, err := createAuditLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
+	want := []byte("replacement owner")
+	if err := os.WriteFile(lockPath, want, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := unlock(); err != nil {
+		t.Fatalf("release replaced lock: %v", err)
+	}
+	got, err := os.ReadFile(lockPath)
+	if err != nil || string(got) != string(want) {
+		t.Fatalf("replacement lock changed: data=%q err=%v", got, err)
+	}
+}
+
 func TestAuditReclaimsLockFromPreviousBoot(t *testing.T) {
 	logger, _ := newTestLogger(t)
 	lockPath := logger.path + ".lock"

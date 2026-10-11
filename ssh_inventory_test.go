@@ -51,11 +51,25 @@ func decodeSSHInventory(t *testing.T, response *httptest.ResponseRecorder) ([]SS
 func TestSSHInventoryReturnsPartialResultsAroundSlowHost(t *testing.T) {
 	t.Setenv("STEPANEL_SSH_SERVERS", "fast-a,slow,fast-b")
 	var active, peak atomic.Int32
+	var hostsStarted atomic.Int32
+	barrier := make(chan struct{})
 	stubSSHInspection(t, func(ctx context.Context, server string) SSHServerStatus {
-		if n := active.Add(1); n > peak.Load() {
-			peak.Store(n)
+		n := active.Add(1)
+		for {
+			current := peak.Load()
+			if n <= current || peak.CompareAndSwap(current, n) {
+				break
+			}
 		}
 		defer active.Add(-1)
+		if hostsStarted.Add(1) == 3 {
+			close(barrier)
+		}
+		select {
+		case <-barrier:
+		case <-ctx.Done():
+			return SSHServerStatus{Server: server, Error: "SSH inspection failed: " + ctx.Err().Error()}
+		}
 		if server == "slow" {
 			if _, ok := ctx.Deadline(); !ok {
 				t.Error("host inspection has no per-host deadline")
@@ -66,7 +80,7 @@ func TestSSHInventoryReturnsPartialResultsAroundSlowHost(t *testing.T) {
 		return SSHServerStatus{Server: server, Reachable: true, Hostname: server}
 	})
 	request := httptest.NewRequest(http.MethodGet, "/api/ssh/inventory", nil)
-	ctx, cancel := context.WithTimeout(request.Context(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
 	defer cancel()
 	response := httptest.NewRecorder()
 	started := time.Now()

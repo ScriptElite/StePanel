@@ -1317,6 +1317,14 @@ func listBackups(root string, signingKey ...string) ([]BackupResult, error) {
 // and by admin routes that need to list all sites' backups or an unscoped
 // admin listing. Not exported; scoped listing uses listBackupsPage.
 func listBackupsPageUnscoped(root, site string, limit int, signingKey ...string) ([]BackupResult, error) {
+	return listBackupsForSite(root, site, limit, signingKey...)
+}
+
+// listBackupsForSite first reads bounded manifests and filters/sorts candidates,
+// then verifies archive contents only for results that can appear on this page.
+// Verifying every archive before applying the site filter and limit made a
+// routine site-specific listing scale with the entire host's retained data.
+func listBackupsForSite(root, site string, limit int, signingKey ...string) ([]BackupResult, error) {
 	entries, err := os.ReadDir(root)
 	if errors.Is(err, os.ErrNotExist) {
 		return []BackupResult{}, nil
@@ -1324,7 +1332,12 @@ func listBackupsPageUnscoped(root, site string, limit int, signingKey ...string)
 	if err != nil {
 		return nil, err
 	}
-	backups := []BackupResult{}
+	type candidate struct {
+		path      string
+		site      string
+		createdAt time.Time
+	}
+	candidates := make([]candidate, 0, len(entries))
 	for _, entry := range entries {
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
@@ -1334,21 +1347,63 @@ func listBackupsPageUnscoped(root, site string, limit int, signingKey ...string)
 			log.Printf("skip backup entry outside backup root %s", entry.Name())
 			continue
 		}
-		manifest, err := VerifySiteBackupForListing(path, firstOptional(signingKey), backupKeysFromOptional(signingKey)...)
+		manifest, data, err := readBackupManifestData(path)
 		if err != nil {
-			// A damaged artifact must not hide every healthy backup from the
-			// operator. Keep it visible in logs for quarantine/repair workflows.
 			log.Printf("skip invalid backup manifest %s: %v", entry.Name(), err)
+			continue
+		}
+		if err := verifyBackupManifestSignature(path, data, manifest, firstOptional(signingKey)); err != nil {
+			log.Printf("skip unauthenticated backup manifest %s: %v", entry.Name(), err)
 			continue
 		}
 		if site != "" && manifest.Site != site {
 			continue
 		}
-		backups = append(backups, BackupResult{Site: manifest.Site, Path: path, ArchiveSHA256: manifest.ArchiveSHA256, Bytes: manifest.Bytes, Databases: manifest.Databases, CreatedAt: manifest.CreatedAt, VerifiedAt: manifest.VerifiedAt, Consistency: manifest.Consistency, ManifestSigned: manifest.SignatureAlgorithm != "", Encrypted: manifest.Encryption != ""})
+		// Do not retain manifest.Entries while scanning the whole backup root:
+		// a valid manifest can itself be several MiB for a large site.
+		candidates = append(candidates, candidate{path: path, site: manifest.Site, createdAt: manifest.CreatedAt})
 	}
-	sort.Slice(backups, func(i, j int) bool { return backups[i].CreatedAt.After(backups[j].CreatedAt) })
-	if limit > 0 && len(backups) > limit {
-		backups = backups[:limit]
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].createdAt.After(candidates[j].createdAt)
+	})
+
+	capacity := len(candidates)
+	if limit > 0 && limit < capacity {
+		capacity = limit
+	}
+	backups := make([]BackupResult, 0, capacity)
+	for _, item := range candidates {
+		if limit > 0 && len(backups) >= limit {
+			break
+		}
+		manifest, data, err := readBackupManifestData(item.path)
+		if err != nil || manifest.Site != item.site || !manifest.CreatedAt.Equal(item.createdAt) || (site != "" && manifest.Site != site) {
+			if err == nil {
+				err = errors.New("backup manifest changed during listing")
+			}
+			log.Printf("skip changed backup manifest %s: %v", filepath.Base(item.path), err)
+			continue
+		}
+		if err := verifyBackupManifestSignature(item.path, data, manifest, firstOptional(signingKey)); err != nil {
+			log.Printf("skip unauthenticated backup manifest %s: %v", filepath.Base(item.path), err)
+			continue
+		}
+		archivePath, err := safePath(item.path, manifest.Archive)
+		if err != nil {
+			log.Printf("skip backup archive outside backup root %s", filepath.Base(item.path))
+			continue
+		}
+		if cached, ok := getBackupVerificationFromCache(archivePath); ok {
+			manifest.Consistency = cached.Consistency
+			manifest.ArchiveSHA256 = cached.Checksum
+		} else {
+			if err := VerifyBackupArchiveWithKey(archivePath, manifest, backupKeysFromOptional(signingKey)); err != nil {
+				log.Printf("skip unverifiable backup %s: %v", filepath.Base(item.path), err)
+				continue
+			}
+			setBackupVerificationCache(archivePath, manifest.Consistency, manifest.ArchiveSHA256)
+		}
+		backups = append(backups, BackupResult{Site: manifest.Site, Path: item.path, ArchiveSHA256: manifest.ArchiveSHA256, Bytes: manifest.Bytes, Databases: manifest.Databases, CreatedAt: manifest.CreatedAt, VerifiedAt: manifest.VerifiedAt, Consistency: manifest.Consistency, ManifestSigned: manifest.SignatureAlgorithm != "", Encrypted: manifest.Encryption != ""})
 	}
 	return backups, nil
 }
@@ -1357,37 +1412,8 @@ func listBackupsPageUnscoped(root, site string, limit int, signingKey ...string)
 // enforce tenant scoping. Call this from scoped request handlers; use
 // listBackupsPageUnscoped for admin unscoped listing (not exported).
 func listBackupsPage(root string, site SiteCapability, limit int, signingKey ...string) ([]BackupResult, error) {
-	siteName := site.Site()
-	entries, err := os.ReadDir(root)
-	if errors.Is(err, os.ErrNotExist) {
-		return []BackupResult{}, nil
+	if site == nil || site.Site() == "" {
+		return nil, errors.New("site capability is required to list backups")
 	}
-	if err != nil {
-		return nil, err
-	}
-	backups := []BackupResult{}
-	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
-			continue
-		}
-		path, err := safePath(root, entry.Name())
-		if err != nil {
-			log.Printf("skip backup entry outside backup root %s", entry.Name())
-			continue
-		}
-		manifest, err := VerifySiteBackupForListing(path, firstOptional(signingKey), backupKeysFromOptional(signingKey)...)
-		if err != nil {
-			log.Printf("skip invalid backup manifest %s: %v", entry.Name(), err)
-			continue
-		}
-		if manifest.Site != siteName {
-			continue
-		}
-		backups = append(backups, BackupResult{Site: manifest.Site, Path: path, ArchiveSHA256: manifest.ArchiveSHA256, Bytes: manifest.Bytes, Databases: manifest.Databases, CreatedAt: manifest.CreatedAt, VerifiedAt: manifest.VerifiedAt, Consistency: manifest.Consistency, ManifestSigned: manifest.SignatureAlgorithm != "", Encrypted: manifest.Encryption != ""})
-	}
-	sort.Slice(backups, func(i, j int) bool { return backups[i].CreatedAt.After(backups[j].CreatedAt) })
-	if limit > 0 && len(backups) > limit {
-		backups = backups[:limit]
-	}
-	return backups, nil
+	return listBackupsForSite(root, site.Site(), limit, signingKey...)
 }

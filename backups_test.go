@@ -741,6 +741,73 @@ func TestBackupListingOmitsUnverifiableArchives(t *testing.T) {
 	}
 }
 
+func TestSiteBackupListingVerifiesOnlyMatchingSiteArtifacts(t *testing.T) {
+	root := t.TempDir()
+	webRoot := filepath.Join(root, "www")
+	backupRoot := filepath.Join(root, "backups")
+	writeTestFile(t, filepath.Join(webRoot, "sites", "target", "public", "index.html"), "target")
+	writeTestFile(t, filepath.Join(webRoot, "sites", "unrelated", "public", "index.html"), "unrelated")
+
+	olderTarget, err := CreateSiteBackup(Config{WebRoot: webRoot, BackupRoot: backupRoot}, AuthorizedSite{site: "target"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(olderTarget.Path, "manifest.json")
+	manifestData, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var olderManifest BackupManifest
+	if err := json.Unmarshal(manifestData, &olderManifest); err != nil {
+		t.Fatal(err)
+	}
+	olderManifest.CreatedAt = time.Now().UTC().Add(-time.Hour)
+	manifestData, err = json.Marshal(olderManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, manifestData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	target, err := CreateSiteBackup(Config{WebRoot: webRoot, BackupRoot: backupRoot}, AuthorizedSite{site: "target"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelated, err := CreateSiteBackup(Config{WebRoot: webRoot, BackupRoot: backupRoot}, AuthorizedSite{site: "unrelated"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupCacheMu.Lock()
+	previousCache := backupVerificationCache
+	backupVerificationCache = make(map[string]verificationCacheEntry)
+	backupCacheMu.Unlock()
+	t.Cleanup(func() {
+		backupCacheMu.Lock()
+		backupVerificationCache = previousCache
+		backupCacheMu.Unlock()
+	})
+
+	items, err := listBackupsPage(backupRoot, AuthorizedSite{site: "target"}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Site != "target" {
+		t.Fatalf("site-scoped listing = %#v, want only target backup", items)
+	}
+	targetArchive := filepath.Join(target.Path, "backup.tar.gz")
+	olderTargetArchive := filepath.Join(olderTarget.Path, "backup.tar.gz")
+	unrelatedArchive := filepath.Join(unrelated.Path, "backup.tar.gz")
+	if _, ok := getBackupVerificationFromCache(targetArchive); !ok {
+		t.Fatal("newest matching site backup was not verified for listing")
+	}
+	if _, ok := getBackupVerificationFromCache(olderTargetArchive); ok {
+		t.Fatal("site-scoped listing verified an older artifact beyond the requested page limit")
+	}
+	if _, ok := getBackupVerificationFromCache(unrelatedArchive); ok {
+		t.Fatal("site-scoped listing unnecessarily read and verified another site's archive")
+	}
+}
+
 func TestCreateSiteBackupIncludesManagedDatabaseDump(t *testing.T) {
 	root := t.TempDir()
 	webRoot := filepath.Join(root, "www")

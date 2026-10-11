@@ -1238,3 +1238,31 @@ func TestAuditLegacyLogIsPreservedBeforeStartingChain(t *testing.T) {
 		t.Fatal("legacy audit log was not preserved")
 	}
 }
+
+func TestAuditStaleLockReclaimPreservesReplacementLock(t *testing.T) {
+	logger, _ := newTestLogger(t)
+	lockPath := logger.path + ".lock"
+	if err := os.WriteFile(lockPath, []byte("999999999 1"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	judged, err := os.Lstat(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another waiter reclaims the same stale lock and publishes its own live
+	// lock before this waiter removes what it judged stale.
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := createAuditLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	if removeLockIfUnchanged(lockPath, judged) {
+		t.Fatal("stale-lock reclaim removed a replacement live lock")
+	}
+	if _, err := os.Lstat(lockPath); err != nil {
+		t.Fatalf("replacement lock missing: %v", err)
+	}
+}

@@ -240,15 +240,12 @@ func createAuditLock(lockPath string) (func() error, error) {
 	metadata := fmt.Sprintf("%d %d %s", os.Getpid(), processStartTime(os.Getpid()), kernelBootID())
 	written, writeErr := auditLockWrite(temp, []byte(metadata))
 	if writeErr != nil {
-		_ = temp.Close()
 		return nil, fmt.Errorf("write audit lock metadata: %w", writeErr)
 	}
 	if written != len(metadata) {
-		_ = temp.Close()
 		return nil, errors.New("write audit lock metadata: short write")
 	}
 	if err := auditSync(temp); err != nil {
-		_ = temp.Close()
 		return nil, fmt.Errorf("sync audit lock metadata: %w", err)
 	}
 	if _, err := temp.Stat(); err != nil {
@@ -295,6 +292,10 @@ func removeAuditLockIfSame(lockPath string, owner *os.File) error {
 // reclaim only a verifiably dead owner or an aged empty lock from an older
 // version that published its path before writing owner metadata.
 func reclaimStaleLock(lockFile string) bool {
+	judged, err := os.Lstat(lockFile)
+	if err != nil || !judged.Mode().IsRegular() {
+		return false
+	}
 	contents, err := os.ReadFile(lockFile)
 	if err != nil {
 		return false
@@ -309,11 +310,10 @@ func reclaimStaleLock(lockFile string) bool {
 		if err != nil || info.Size() != 0 || time.Since(info.ModTime()) < emptyAuditLockStaleAfter {
 			return false
 		}
-		current, err := os.Stat(lockFile)
-		if err != nil || !os.SameFile(info, current) || current.Size() != 0 {
+		if !os.SameFile(judged, info) {
 			return false
 		}
-		return os.Remove(lockFile) == nil
+		return removeLockIfUnchanged(lockFile, judged)
 	}
 	if len(fields) != 2 && len(fields) != 3 {
 		return false
@@ -330,9 +330,23 @@ func reclaimStaleLock(lockFile string) bool {
 	// the PID and start tick happen to match a process from this boot. Only
 	// trust that conclusion when the current boot ID is known.
 	if bootID := kernelBootID(); len(fields) == 3 && bootID != "" && fields[2] != bootID {
-		return os.Remove(lockFile) == nil
+		return removeLockIfUnchanged(lockFile, judged)
 	}
 	if processStartTime(pid) == startTime {
+		return false
+	}
+	return removeLockIfUnchanged(lockFile, judged)
+}
+
+// removeLockIfUnchanged removes lockFile only if it is still the inode that
+// was judged stale. Another waiter may have reclaimed the same stale lock and
+// published its own live lock in the meantime; removing by path alone would
+// delete that live lock and admit two concurrent writers. The modification
+// time and size recheck also guards against the freed inode number being
+// reused by the new owner's lock file.
+func removeLockIfUnchanged(lockFile string, judged os.FileInfo) bool {
+	current, err := os.Lstat(lockFile)
+	if err != nil || !os.SameFile(judged, current) || !current.ModTime().Equal(judged.ModTime()) || current.Size() != judged.Size() {
 		return false
 	}
 	return os.Remove(lockFile) == nil

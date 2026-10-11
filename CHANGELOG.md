@@ -15,6 +15,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- Stale audit-lock reclaim now removes the lock only if it is still the same
+  inode, modification time, and size that was judged stale. Previously two
+  waiters could reclaim the same dead lock, and the slower one would delete
+  the faster one's newly published live lock by path, admitting concurrent
+  audit writers. Also removed a redundant double close of the temporary lock
+  file on metadata write and sync failures.
 - Strengthened the termination backup-schedule regression test to exercise the
   actual journaled task-cleanup hook, reload durable schedule state after a
   simulated restart, and prove site-name reuse does not enqueue a stale

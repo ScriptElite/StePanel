@@ -10,10 +10,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - Recorded the 2026-10-11 Rocky Linux 9 and AlmaLinux 9 hosted installation
   smoke results, including the default recovery matrix and explicit limits of
-  the container-based evidence.
+  the container-based evidence; linked the run in the authoritative production
+  gate document.
 
 ### Changed
 
+- Updated the rootless-runner permission smoke to pass the persisted site Unix
+  identity required by the current runner helper contract.
 - Routed managed site transaction snapshots and rollback renames through the
   typed root broker in production; the installed-host smoke now imports twice
   into the same site, with replay-safe TOTP logins, to cover replacement of

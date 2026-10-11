@@ -1,7 +1,7 @@
 # StePanel v1.0.0 Production Readiness Gates
 
 **Status:** CURRENT AUTHORITATIVE RELEASE-GATE DOCUMENT
-**Last Updated:** 2026-10-10
+**Last Updated:** 2026-10-11
 **Target:** Ready to run 100+ production WordPress/PHP customer sites  
 **Approach:** Complete existing architectural contracts, add robustness testing
 
@@ -462,6 +462,14 @@ install the Git runtime required for deploys; the hosted recovery smoke passes
 with those fixes on both distributions. The five-operation acceptance criteria
 remain open for multi-point failure injection, real disk-exhaustion, actual
 host power-loss, and broader workload and recovery-time evidence.
+
+The newer [2026-10-11 hosted installation smoke](./lab-results/2026-10-11-hosted-install-smoke.md)
+passed the default installed-host recovery matrix once each on Rocky Linux 9
+and AlmaLinux 9 at commit `a0c0585`. This is privileged systemd-container
+evidence: it covers same-site replacement import, SFTP, backup/file/database
+restore, termination, suspension, and deployment interruption, but does not
+replace repeated KVM/VM matrix runs, physical power-loss testing, or ENOSPC
+outside backup creation.
 
 **KVM certification runs:** a 2026-10-10 Rocky Linux 9 KVM guest passed the
 installation and full 107-pass recovery matrix once; this run did not execute

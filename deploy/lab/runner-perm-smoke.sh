@@ -78,7 +78,7 @@ rm -f -- "$artifact/proof" 2>/dev/null || true
 # build proves the runner's per-site runtime directory is stable.
 for attempt in 1 2; do
   /usr/local/sbin/stepanel-runnerctl build \
-    "$RUNNER_TEST_SITE" "$RUNNER_TEST_IMAGE" "$site_root/public" "$script" \
+    "$RUNNER_TEST_SITE" "$site_user" "$RUNNER_TEST_IMAGE" "$site_root/public" "$script" \
     100 256 128 none 5368709120 || { echo "runner build $attempt failed" >&2; exit 1; }
 done
 rm -f -- "$site_root/public/stepanel-runner-source.txt"
@@ -87,7 +87,7 @@ rm -f -- "$site_root/public/stepanel-runner-source.txt"
 failing=$(mktemp --tmpdir="$STEPANEL_APP_ROOT" pipeline-fail-XXXXXXXX.sh)
 chown stepanel:stepanel "$failing"; chmod 0600 "$failing"
 printf 'set -eu\necho partial > /artifact/proof\nexit 3\n' > "$failing"
-if /usr/local/sbin/stepanel-runnerctl build "$RUNNER_TEST_SITE" "$RUNNER_TEST_IMAGE" "$site_root/public" "$failing" 100 256 128 none 5368709120; then
+if /usr/local/sbin/stepanel-runnerctl build "$RUNNER_TEST_SITE" "$site_user" "$RUNNER_TEST_IMAGE" "$site_root/public" "$failing" 100 256 128 none 5368709120; then
   rm -f -- "$failing"; echo 'failing build reported success' >&2; exit 1
 fi
 rm -f -- "$failing"

@@ -296,7 +296,9 @@ func TestDBLocks_HoldRenewsUntilCancel(t *testing.T) {
 	}
 	defer other.Close()
 
-	owner, err := NewDBLocks(a, "owner-a", 200*time.Millisecond)
+	// Leave enough scheduling margin for shared CI runners; the test still
+	// requires the lock to survive multiple complete lease periods.
+	owner, err := NewDBLocks(a, "owner-a", 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,12 +311,34 @@ func TestDBLocks_HoldRenewsUntilCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- owner.Hold(ctx, lease) }()
 
-	// Wait past the original lease duration. If Hold weren't renewing, the
-	// lease would expire and a competing owner could take over.
-	time.Sleep(600 * time.Millisecond)
+	// Synchronize on Hold's immediate renewal instead of assuming its
+	// goroutine was scheduled before a very short lease expired.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		var expiry int64
+		if err := other.QueryRow(`SELECT lease_until FROM resource_locks WHERE resource_key = ?`, "site-h").Scan(&expiry); err != nil {
+			t.Fatalf("read lease while waiting for initial renewal: %v", err)
+		}
+		if expiry > lease.ExpiresAt.UnixNano() {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("Hold exited before renewing the lease: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Hold did not durably renew the lease within 3s")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Wait beyond the original expiry and through another renewal interval.
+	time.Sleep(3 * time.Second)
 
 	// From a second database handle, the lock must still be held.
 	if _, err := stealer.TryAcquire("site-h"); !errors.Is(err, ErrLockHeld) {

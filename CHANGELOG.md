@@ -8,6 +8,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- Stabilized the cross-handle lease-renewal test by waiting for its first
+  durable renewal and allowing normal CI scheduling jitter.
 - Fixed full recovery-matrix fixture naming so every repetition receives
   distinct site/account identities, and added a 50-repeat collision and name-
   length preflight to CI.

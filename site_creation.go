@@ -291,7 +291,7 @@ func (a *App) handleSiteCreation(ctx context.Context, item Job) ([]byte, error) 
 		return nil, fmt.Errorf("populate %s: %w", template.description, err)
 	}
 
-	txn, err := BeginSiteTransaction(a.Config.RecoveryRoot, canonical, siteCreationTransactionKind, access)
+	txn, err := beginManagedSiteTransaction(operationCtx, a.Config, canonical, siteCreationTransactionKind, access)
 	if err != nil {
 		return nil, fmt.Errorf("begin site creation transaction: %w", err)
 	}

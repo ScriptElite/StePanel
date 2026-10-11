@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/cyberducttape/StePanel/internal/rootbroker"
 )
 
 type SiteTransaction struct {
@@ -53,6 +55,36 @@ func BeginSiteTransactionWithSnapshot(root, home, kind string, access SiteCapabi
 		return nil, errors.New("site snapshot callback is required")
 	}
 	return beginSiteTransaction(root, home, kind, access, snapshot)
+}
+
+// beginManagedSiteTransaction uses the root broker for renames that cross
+// the tenant-owned live-site boundary. The same callback is retained by the
+// transaction so an in-process rollback uses the privileged path too; after
+// process death, startup recovery supplies its freshly fenced broker callback.
+func beginManagedSiteTransaction(ctx context.Context, cfg Config, home, kind string, access SiteCapability) (*SiteTransaction, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	snapshot := os.Rename
+	if cfg.Production || labDirectRootBrokerEnabled() {
+		public, err := filepath.Abs(home)
+		if err != nil {
+			return nil, fmt.Errorf("resolve managed site snapshot path: %w", err)
+		}
+		snapshot = func(source, destination string) error {
+			action := "snapshot"
+			if filepath.Clean(destination) == filepath.Clean(public) {
+				action = "snapshot-restore"
+			}
+			return runTypedSiteMutation(context.WithoutCancel(ctx), cfg, rootbroker.SiteRequest{
+				Action:              action,
+				Site:                access.Site(),
+				SnapshotSource:      source,
+				SnapshotDestination: destination,
+			})
+		}
+	}
+	return BeginSiteTransactionWithSnapshot(cfg.RecoveryRoot, home, kind, access, snapshot)
 }
 
 func beginSiteTransaction(root, home, kind string, access SiteCapability, snapshot func(string, string) error) (*SiteTransaction, error) {

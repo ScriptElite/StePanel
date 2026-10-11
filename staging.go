@@ -231,7 +231,7 @@ func (a *App) stagingCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	txn, err := BeginSiteTransaction(a.Config.RecoveryRoot, dest, "staging.clone", targetAccess)
+	txn, err := beginManagedSiteTransaction(operationCtx, a.Config, dest, "staging.clone", targetAccess)
 	if err != nil {
 		http.Error(w, "could not begin staging transaction", 503)
 		return

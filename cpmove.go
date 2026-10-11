@@ -354,7 +354,7 @@ func restoreCPMoveArchiveContext(ctx context.Context, cfg Config, archive string
 			_ = manager.DiscardStaging(context.Background(), managerStage)
 		}
 	}()
-	txn, err := BeginSiteTransaction(cfg.RecoveryRoot, home, "cpmove.restore", site)
+	txn, err := beginManagedSiteTransaction(ctx, cfg, home, "cpmove.restore", site)
 	if err != nil {
 		return ImportResult{}, err
 	}

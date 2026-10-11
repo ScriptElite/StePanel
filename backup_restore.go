@@ -10,7 +10,6 @@ import (
 	"github.com/cyberducttape/StePanel/internal/backup"
 	"github.com/cyberducttape/StePanel/internal/domainname"
 	"github.com/cyberducttape/StePanel/internal/recovery"
-	"github.com/cyberducttape/StePanel/internal/rootbroker"
 	"io"
 	"log"
 	"net/http"
@@ -602,7 +601,7 @@ func (a *App) backupRestoreToStagingPath(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "could not apply restore indexing protection", 503)
 		return
 	}
-	txn, e := BeginSiteTransaction(a.Config.RecoveryRoot, dest, "backup.restore-to-staging", access)
+	txn, e := beginManagedSiteTransaction(operationCtx, a.Config, dest, "backup.restore-to-staging", access)
 	if e != nil {
 		http.Error(w, "could not journal restore", 503)
 		return
@@ -864,18 +863,7 @@ func backupRestoreFiles(ctx context.Context, cfg Config, backupName string, site
 	if err != nil {
 		return BackupRestoreResult{}, err
 	}
-	snapshot := os.Rename
-	if cfg.Production || labDirectRootBrokerEnabled() {
-		snapshot = func(source, backupPath string) error {
-			return runTypedSiteMutation(ctx, cfg, rootbroker.SiteRequest{
-				Action:              "snapshot",
-				Site:                siteName,
-				SnapshotSource:      source,
-				SnapshotDestination: backupPath,
-			})
-		}
-	}
-	txn, err := BeginSiteTransactionWithSnapshot(cfg.RecoveryRoot, dest, "backup.restore-files", site, snapshot)
+	txn, err := beginManagedSiteTransaction(ctx, cfg, dest, "backup.restore-files", site)
 	if err != nil {
 		return BackupRestoreResult{}, err
 	}

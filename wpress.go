@@ -294,7 +294,7 @@ func RestoreWPressContext(parent context.Context, cfg Config, archive string, ac
 	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 		return WPressResult{}, fmt.Errorf("inspect destination site: %w", statErr)
 	}
-	txn, err := BeginSiteTransaction(cfg.RecoveryRoot, home, "wordpress.restore", access)
+	txn, err := beginManagedSiteTransaction(ctx, cfg, home, "wordpress.restore", access)
 	if err != nil {
 		return WPressResult{}, err
 	}

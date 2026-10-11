@@ -401,7 +401,7 @@ func (a *App) handleArchiveImportJob(ctx context.Context, job *Job) ([]byte, err
 		databaseCleanup = result.Cleanup
 	}
 
-	txn, err := BeginSiteTransaction(a.Config.RecoveryRoot, canonical, "archive.import", access)
+	txn, err := beginManagedSiteTransaction(operationCtx, a.Config, canonical, "archive.import", access)
 	if err != nil {
 		return nil, fmt.Errorf("begin archive import transaction: %w", err)
 	}

@@ -24,7 +24,7 @@ site/account names. `RECOVERY_MATRIX_REPEATS=1` is the normal smoke default;
 | WordPress import | repository | lab follow-up | lab follow-up | lab follow-up | lab follow-up |
 | Git deploy | hosted | lab follow-up | lab follow-up | N/A | lab follow-up |
 | Backup | repository/hosted/KVM | KVM guest kill | KVM | lab follow-up | lab follow-up |
-| Restore | repository/hosted/KVM | lab follow-up | hosted/partial | hosted/partial | lab follow-up |
+| Restore | repository/hosted/KVM | lab follow-up | hosted/partial/KVM* | hosted/partial | lab follow-up |
 | Site delete | repository/hosted/KVM | lab follow-up | lab follow-up | lab follow-up | lab follow-up |
 
 **KVM** marks a pass in the single
@@ -37,6 +37,12 @@ Run the same harness with:
 ```sh
 deploy/lab/local-kvm-certification.sh Rocky-9-GenericCloud.latest.x86_64.qcow2
 ```
+
+**KVM*** records the focused 2026-10-11 file-restore ENOSPC drill on a
+dedicated 85 MiB ext4 filesystem. It verifies preservation of existing site
+files, cleanup of restore staging, and successful retry after space is freed;
+it does not cover database restore or whole-host ENOSPC. See the
+[focused drill record](lab-results/2026-10-11-real-enospc-restore.md).
 
 Only mark a cell complete when the guest has rebooted or the fault was
 injected on the real host and the post-boot invariant checks pass: no orphaned

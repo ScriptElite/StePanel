@@ -207,4 +207,4 @@ jobs:
           }
           echo 'quota-enabled guest recovered after abrupt QEMU loss'
           timeout --foreground 10m ssh "${ssh_args[@]}" vmtest@127.0.0.1 \
-            'sudo test "$(findmnt -n -o FSTYPE --target /mnt/stepanel-enospc)" = ext4 && sudo test "$(findmnt -n -o SOURCE --target /mnt/stepanel-enospc)" = /dev/vdc && sudo env STEPANEL_ENOSPC_BACKUP_ROOT=/mnt/stepanel-enospc /work/stepanel-enospc.test -test.run "^TestBackupRecoversFromRealENOSPC$" -test.v'
+            'sudo test "$(findmnt -n -o FSTYPE --target /mnt/stepanel-enospc)" = ext4 && sudo test "$(findmnt -n -o SOURCE --target /mnt/stepanel-enospc)" = /dev/vdc && sudo env STEPANEL_ENOSPC_BACKUP_ROOT=/mnt/stepanel-enospc STEPANEL_ENOSPC_RESTORE_ROOT=/mnt/stepanel-enospc /work/stepanel-enospc.test -test.run "^Test(Backup|RestoreFiles)RecoversFromRealENOSPC$" -test.v'

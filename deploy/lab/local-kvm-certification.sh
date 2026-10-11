@@ -249,8 +249,8 @@ fi
 # --- Real ENOSPC on a small dedicated filesystem ------------------------------
 if has_phase enospc; then
   start=$SECONDS
-  if guest_job enospc 10 'env STEPANEL_ENOSPC_BACKUP_ROOT=/mnt/stepanel-enospc /work/stepanel-enospc.test -test.run "^TestBackupRecoversFromRealENOSPC$" -test.v'; then
-    record enospc PASS $((SECONDS - start)) 'backup recovered from real ENOSPC'
+  if guest_job enospc 15 'env STEPANEL_ENOSPC_BACKUP_ROOT=/mnt/stepanel-enospc STEPANEL_ENOSPC_RESTORE_ROOT=/mnt/stepanel-enospc /work/stepanel-enospc.test -test.run "^Test(Backup|RestoreFiles)RecoversFromRealENOSPC$" -test.v'; then
+    record enospc PASS $((SECONDS - start)) 'backup and file restore recovered from real ENOSPC'
   else
     record enospc FAIL $((SECONDS - start)) "$(tail -1 "$run_dir/enospc.log")"
   fi

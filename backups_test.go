@@ -133,13 +133,10 @@ func TestCreateSiteBackupFailureInjectionCleansTemporaryArchive(t *testing.T) {
 // TestBackupRecoversFromRealENOSPC is enabled only in the disposable QEMU
 // acceptance guest. It requires a small dedicated ext4 filesystem so a bad
 // invocation cannot fill the host or the guest's root filesystem.
-func TestBackupRecoversFromRealENOSPC(t *testing.T) {
-	backupRoot := os.Getenv("STEPANEL_ENOSPC_BACKUP_ROOT")
-	if backupRoot == "" {
-		t.Skip("requires the dedicated ENOSPC acceptance filesystem")
-	}
+func requireRealENOSPCFilesystem(t *testing.T, root string) syscall.Statfs_t {
+	t.Helper()
 	var fs syscall.Statfs_t
-	if err := syscall.Statfs(backupRoot, &fs); err != nil {
+	if err := syscall.Statfs(root, &fs); err != nil {
 		t.Fatal(err)
 	}
 	allowTmpfs := os.Getenv("STEPANEL_ENOSPC_ALLOW_TMPFS") == "1"
@@ -159,6 +156,53 @@ func TestBackupRecoversFromRealENOSPC(t *testing.T) {
 	if availableBytes < 32<<20 {
 		t.Fatalf("ENOSPC target initially has only %d bytes available; refusing a non-isolated or prefilled target", availableBytes)
 	}
+	return fs
+}
+
+func fillRealENOSPCFilesystem(t *testing.T, root string, headroom uint64) string {
+	t.Helper()
+	fillPath := filepath.Join(root, ".enospc-fill")
+	fill, err := os.OpenFile(fillPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := make([]byte, 1<<20)
+	for {
+		var fs syscall.Statfs_t
+		if err := syscall.Statfs(root, &fs); err != nil {
+			_ = fill.Close()
+			t.Fatal(err)
+		}
+		available := uint64(fs.Bavail) * uint64(fs.Bsize)
+		if available <= headroom {
+			break
+		}
+		if _, err := fill.Write(chunk); err != nil && !errors.Is(err, syscall.ENOSPC) {
+			_ = fill.Close()
+			t.Fatalf("fill dedicated filesystem: %v", err)
+		}
+		if err := fill.Sync(); err != nil && !errors.Is(err, syscall.ENOSPC) {
+			_ = fill.Close()
+			t.Fatalf("sync filesystem filler: %v", err)
+		}
+	}
+	if err := fill.Close(); err != nil && !errors.Is(err, syscall.ENOSPC) {
+		t.Fatalf("close filesystem filler: %v", err)
+	}
+	return fillPath
+}
+
+func TestBackupRecoversFromRealENOSPC(t *testing.T) {
+	enospcRoot := os.Getenv("STEPANEL_ENOSPC_BACKUP_ROOT")
+	if enospcRoot == "" {
+		t.Skip("requires the dedicated ENOSPC acceptance filesystem")
+	}
+	_ = requireRealENOSPCFilesystem(t, enospcRoot)
+	backupRoot, err := os.MkdirTemp(enospcRoot, "backup-enospc-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(backupRoot) })
 
 	root := t.TempDir()
 	webRoot := filepath.Join(root, "www")
@@ -176,33 +220,8 @@ func TestBackupRecoversFromRealENOSPC(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fillPath := filepath.Join(backupRoot, ".enospc-fill")
-	fill, err := os.OpenFile(fillPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	chunk := make([]byte, 1<<20)
-	for {
-		if err := syscall.Statfs(backupRoot, &fs); err != nil {
-			_ = fill.Close()
-			t.Fatal(err)
-		}
-		available := uint64(fs.Bavail) * uint64(fs.Bsize)
-		if available <= 4<<20 {
-			break
-		}
-		if _, err := fill.Write(chunk); err != nil && !errors.Is(err, syscall.ENOSPC) {
-			_ = fill.Close()
-			t.Fatalf("fill dedicated filesystem: %v", err)
-		}
-		if err := fill.Sync(); err != nil && !errors.Is(err, syscall.ENOSPC) {
-			_ = fill.Close()
-			t.Fatalf("sync filesystem filler: %v", err)
-		}
-	}
-	if err := fill.Close(); err != nil && !errors.Is(err, syscall.ENOSPC) {
-		t.Fatalf("close filesystem filler: %v", err)
-	}
+	fillPath := fillRealENOSPCFilesystem(t, backupRoot, 4<<20)
+	t.Cleanup(func() { _ = os.Remove(fillPath) })
 
 	_, backupErr := CreateSiteBackup(Config{WebRoot: webRoot, BackupRoot: backupRoot}, AuthorizedSite{site: "enospc"}, false)
 	if !errors.Is(backupErr, syscall.ENOSPC) {
@@ -247,6 +266,69 @@ func TestBackupRecoversFromRealENOSPC(t *testing.T) {
 	if manifest.Site != "enospc" || manifest.Bytes == 0 {
 		t.Fatalf("recovered backup manifest = %#v", manifest)
 	}
+}
+
+// TestRestoreFilesRecoversFromRealENOSPC runs extraction against a separate,
+// small filesystem. The live site and verified backup remain on the normal
+// test filesystem, so a failed restore must preserve the old site and clean
+// its import stage before a retry can succeed.
+func TestRestoreFilesRecoversFromRealENOSPC(t *testing.T) {
+	enospcFilesystem := os.Getenv("STEPANEL_ENOSPC_RESTORE_ROOT")
+	if enospcFilesystem == "" {
+		t.Skip("requires the dedicated ENOSPC restore filesystem")
+	}
+	_ = requireRealENOSPCFilesystem(t, enospcFilesystem)
+	enospcRoot, err := os.MkdirTemp(enospcFilesystem, "restore-enospc-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(enospcRoot) })
+	t.Setenv("STEPANEL_AUDIT_KEY", strings.Repeat("k", 32))
+	f := crashDrillFixture(t.TempDir())
+	f.cfg.ImportRoot = enospcRoot
+	payload := incompressible(t, 24<<20)
+	want := map[string]string{"index.html": "version one", "payload.bin": payload}
+	f.writeSite(t, want)
+	backup := f.backup(t)
+	f.writeSite(t, map[string]string{"index.html": "version two"})
+
+	fillPath := fillRealENOSPCFilesystem(t, enospcRoot, 4<<20)
+	t.Cleanup(func() { _ = os.Remove(fillPath) })
+	if _, err := backupRestoreFiles(context.Background(), f.cfg, backup, f.site); !errors.Is(err, syscall.ENOSPC) {
+		t.Fatalf("restore error = %v, want real ENOSPC", err)
+	}
+	f.assertSite(t, map[string]string{"index.html": "version two"})
+	entries, err := os.ReadDir(enospcRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var artifacts []os.DirEntry
+	for _, entry := range entries {
+		if entry.Name() != "lost+found" {
+			artifacts = append(artifacts, entry)
+		}
+	}
+	if len(artifacts) != 1 || artifacts[0].Name() != filepath.Base(fillPath) {
+		names := make([]string, 0, len(artifacts))
+		for _, entry := range artifacts {
+			names = append(names, entry.Name())
+		}
+		t.Fatalf("restore staging after ENOSPC = %q, want only the filler", names)
+	}
+	if err := os.Remove(fillPath); err != nil {
+		t.Fatal(err)
+	}
+	// Keep this focused filesystem test independent of the host's privileged
+	// site-snapshot broker. The failed attempt already proved that the existing
+	// site's files survived ENOSPC; retry publication into an empty document
+	// root exercises successful extraction and activation without snapshotting.
+	if err := os.RemoveAll(f.public()); err != nil {
+		t.Fatalf("prepare empty destination for restore retry: %v", err)
+	}
+	if _, err := backupRestoreFiles(context.Background(), f.cfg, backup, f.site); err != nil {
+		t.Fatalf("restore retry after freeing space: %v", err)
+	}
+	f.assertSite(t, want)
 }
 
 func TestSignedBackupManifestRequiresValidExternalKey(t *testing.T) {

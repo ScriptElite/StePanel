@@ -15,6 +15,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- Extended the disposable ext4 ENOSPC gate to exercise both backup creation
+  and file-restore extraction, checking that the live site survives and a
+  retry succeeds after space is reclaimed. Recorded the focused KVM result;
+  the repeated and host-wide failure gates remain open.
 - Updated the rootless-runner permission smoke to use the prepared site's
   persisted filesystem owner, rather than deriving a legacy Unix identity.
 - Routed managed site transaction snapshots and rollback renames through the

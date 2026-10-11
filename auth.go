@@ -355,9 +355,11 @@ func (a Auth) Require(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if username, scopes, ok := a.validAPITokenWithScopes(r); ok {
+		if token, ok := a.validAPIToken(r); ok {
+			username := token.Username
 			r = r.WithContext(context.WithValue(r.Context(), apiTokenUsernameKey{}, username))
-			r = r.WithContext(context.WithValue(r.Context(), apiTokenScopesKey{}, scopes))
+			r = r.WithContext(context.WithValue(r.Context(), apiTokenScopesKey{}, token.Scopes))
+			r = r.WithContext(context.WithValue(r.Context(), apiTokenIDKey{}, token.ID))
 			if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
 				if err := SecurityAuditRequired(a.AuditLog, username, "http.request", r.URL.Path, a.ClientIP(r)); err != nil {
 					http.Error(w, "audit persistence is unavailable", 503)
@@ -591,37 +593,55 @@ func (a Auth) IsAPITokenRequest(r *http.Request) bool {
 type apiTokenUsernameKey struct{}
 type apiTokenScopesKey struct{}
 
+// apiTokenIDKey carries the authenticated token's ID so work queued by the
+// request can be revalidated against that token when it runs.
+type apiTokenIDKey struct{}
+
+// APITokenID returns the ID of the API token that authenticated r, or "".
+func (a Auth) APITokenID(r *http.Request) string {
+	id, _ := r.Context().Value(apiTokenIDKey{}).(string)
+	return id
+}
+
 func (a Auth) validAPITokenWithScopes(r *http.Request) (string, []string, bool) {
+	token, ok := a.validAPIToken(r)
+	return token.Username, token.Scopes, ok
+}
+
+func (a Auth) validAPIToken(r *http.Request) (apiTokenIdentity, bool) {
 	value := strings.TrimSpace(r.Header.Get("Authorization"))
 	if len(value) < 8 || !strings.EqualFold(value[:7], "Bearer ") {
-		return "", nil, false
+		return apiTokenIdentity{}, false
 	}
 	tokenValue := strings.TrimSpace(value[7:])
-	username, scopes, isLegacyUnscoped, ok := a.apiTokens.authenticateWithScopesAndLegacy(tokenValue)
+	token, ok := a.apiTokens.authenticateToken(tokenValue)
 	if !ok {
-		return "", nil, false
+		return apiTokenIdentity{}, false
 	}
 
 	// Rate limit per API token to prevent abuse of compromised tokens.
 	// Each token gets 600 requests per minute (10 per second).
 	if a.apiTokenLimiter != nil && !a.apiTokenLimiter.allow(tokenValue) {
-		return "", nil, false
+		return apiTokenIdentity{}, false
 	}
 
 	// Unscoped legacy tokens are accepted only until the host-wide hard
 	// cutoff (see legacyTokenAllowed).
-	if isLegacyUnscoped && !a.legacyTokenAllowed(tokenValue, true) {
-		return "", nil, false
+	if token.legacyUnscoped() && !a.legacyTokenAllowed(tokenValue, true) {
+		return apiTokenIdentity{}, false
 	}
 
-	if subtle.ConstantTimeCompare([]byte(username), []byte(a.Username)) == 1 {
-		return username, scopes, true
+	if subtle.ConstantTimeCompare([]byte(token.Username), []byte(a.Username)) == 1 {
+		return token, true
 	}
 	if a.Accounts == nil {
-		return "", nil, false
+		return apiTokenIdentity{}, false
 	}
-	_, exists := a.Accounts.Get(username)
-	return username, scopes, exists && !a.Accounts.TenantSuspended(username)
+	_, exists := a.Accounts.Get(token.Username)
+	if !exists || a.Accounts.TenantSuspended(token.Username) {
+		return apiTokenIdentity{}, false
+	}
+	return token, true
 }
 
 // legacyTokenAllowed enforces the hard cutoff for unscoped legacy tokens.

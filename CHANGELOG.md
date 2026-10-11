@@ -8,6 +8,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Security
 
+- Site operations queued by an API token now record the token ID and are
+  revalidated against that token when the worker starts them. Previously the
+  worker replayed the saved username and scope list, so revoking a token did
+  not stop deployments it had already queued. Queued operations of a revoked,
+  expired, or deleted token now fail without running.
 - Customer API tokens with explicit scopes are now re-checked against the
   owning member's current role and tenant suspension on every request.
   Scopes were previously validated only at issuance, so a developer or

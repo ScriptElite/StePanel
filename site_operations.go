@@ -88,6 +88,7 @@ type siteOperationPayload struct {
 	Site      string   `json:"site"`
 	Actor     string   `json:"actor,omitempty"`
 	Token     bool     `json:"token,omitempty"`
+	TokenID   string   `json:"token_id,omitempty"`
 	Scopes    []string `json:"scopes,omitempty"`
 	Webhook   bool     `json:"webhook,omitempty"`
 }
@@ -143,6 +144,7 @@ func (a *App) siteOperation(name string) http.HandlerFunc {
 			Site:      site,
 			Actor:     a.Auth.UsernameForRequest(r),
 			Token:     a.Auth.IsAPITokenRequest(r),
+			TokenID:   a.Auth.APITokenID(r),
 			Scopes:    scopes,
 		})
 	}
@@ -206,8 +208,13 @@ func (a *App) handleSiteOperationJob(ctx context.Context, item Job) ([]byte, err
 		config.Site = payload.Site
 		operationCtx = context.WithValue(operationCtx, gitWebhookSiteKey{}, newAuthenticatedWebhook(config))
 	case payload.Token:
-		operationCtx = context.WithValue(operationCtx, apiTokenUsernameKey{}, payload.Actor)
-		operationCtx = context.WithValue(operationCtx, apiTokenScopesKey{}, payload.Scopes)
+		token, err := a.revalidateQueuedToken(payload)
+		if err != nil {
+			return nil, err
+		}
+		operationCtx = context.WithValue(operationCtx, apiTokenUsernameKey{}, token.Username)
+		operationCtx = context.WithValue(operationCtx, apiTokenScopesKey{}, token.Scopes)
+		operationCtx = context.WithValue(operationCtx, apiTokenIDKey{}, token.ID)
 	case payload.Actor != "":
 		operationCtx = context.WithValue(operationCtx, replayedIdentityKey{}, payload.Actor)
 	}
@@ -231,6 +238,29 @@ func (a *App) handleSiteOperationJob(ctx context.Context, item Job) ([]byte, err
 		return body, nil
 	}
 	return json.Marshal(map[string]string{"message": string(body)})
+}
+
+// revalidateQueuedToken enforces the queued-work contract for API tokens: an
+// operation queued under a token runs only if that token is still valid when
+// a worker starts it. Revoking or expiring a token therefore cancels its
+// queued operations; an operation already running completes. The replay uses
+// the token's current scopes, and the handler re-checks the member's current
+// role and site ownership.
+func (a *App) revalidateQueuedToken(payload siteOperationPayload) (apiTokenIdentity, error) {
+	if payload.TokenID == "" {
+		return apiTokenIdentity{}, errors.New("operation was queued by an API token without a recorded token identity; submit it again")
+	}
+	token, err := a.APITokens.activeToken(payload.TokenID)
+	if errors.Is(err, errAPITokenInactive) {
+		return apiTokenIdentity{}, errors.New("the API token that queued this operation was revoked or expired before it ran")
+	}
+	if err != nil {
+		return apiTokenIdentity{}, fmt.Errorf("revalidate queuing API token: %w", err)
+	}
+	if token.Username != payload.Actor {
+		return apiTokenIdentity{}, errors.New("queuing API token no longer belongs to the requester")
+	}
+	return token, nil
 }
 
 // siteOperationFailure is the job error for a non-2xx handler response: the

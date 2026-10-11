@@ -297,28 +297,67 @@ func (s *apiTokenStore) authenticateWithScopes(secret string) (string, []string,
 	return username, scopes, ok
 }
 
+// apiTokenIdentity is an authenticated, currently valid API token.
+type apiTokenIdentity struct {
+	ID       string
+	Username string
+	Scopes   []string
+}
+
+// legacyUnscoped reports a pre-scope-enforcement token with no scopes.
+func (t apiTokenIdentity) legacyUnscoped() bool { return len(t.Scopes) == 0 }
+
+// errAPITokenInactive reports that a token no longer exists, was revoked, or
+// has expired.
+var errAPITokenInactive = errors.New("API token is revoked, expired, or no longer exists")
+
 // authenticateWithScopesAndLegacy returns username, scopes, isLegacyUnscoped, and whether auth succeeded
 func (s *apiTokenStore) authenticateWithScopesAndLegacy(secret string) (string, []string, bool, bool) {
+	token, ok := s.authenticateToken(secret)
+	return token.Username, token.Scopes, token.legacyUnscoped(), ok
+}
+
+func (s *apiTokenStore) authenticateToken(secret string) (apiTokenIdentity, bool) {
 	if s == nil || s.db == nil || !strings.HasPrefix(secret, "stp_") || len(secret) > 100 {
-		return "", nil, false, false
+		return apiTokenIdentity{}, false
 	}
 	digest := sha256.Sum256([]byte(secret))
-	var username string
+	token, err := s.activeTokenWhere(`token_hash = ?`, hex.EncodeToString(digest[:]))
+	return token, err == nil
+}
+
+// activeToken re-reads a token by ID, so work authorized by a token (such as
+// a queued site operation) can be refused after the token is revoked.
+func (s *apiTokenStore) activeToken(id string) (apiTokenIdentity, error) {
+	if s == nil || s.db == nil {
+		return apiTokenIdentity{}, errors.New("API token store is unavailable")
+	}
+	if strings.TrimSpace(id) == "" {
+		return apiTokenIdentity{}, errAPITokenInactive
+	}
+	return s.activeTokenWhere(`id = ?`, id)
+}
+
+func (s *apiTokenStore) activeTokenWhere(condition, value string) (apiTokenIdentity, error) {
+	var token apiTokenIdentity
 	var scopeText string
 	var expiresAt, revokedAt sql.NullInt64
-	err := s.db.QueryRow(`SELECT username, scopes, expires_at, revoked_at FROM api_tokens WHERE token_hash = ?`, hex.EncodeToString(digest[:])).Scan(&username, &scopeText, &expiresAt, &revokedAt)
-	if err != nil || revokedAt.Valid || expiresAt.Valid && expiresAt.Int64 <= time.Now().Unix() {
-		return "", nil, false, false
+	err := s.db.QueryRow(`SELECT id, username, scopes, expires_at, revoked_at FROM api_tokens WHERE `+condition, value).Scan(&token.ID, &token.Username, &scopeText, &expiresAt, &revokedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return apiTokenIdentity{}, errAPITokenInactive
 	}
-	var scopes []string
+	if err != nil {
+		return apiTokenIdentity{}, fmt.Errorf("read API token: %w", err)
+	}
+	if revokedAt.Valid || expiresAt.Valid && expiresAt.Int64 <= time.Now().Unix() {
+		return apiTokenIdentity{}, errAPITokenInactive
+	}
 	for _, scope := range strings.Split(scopeText, ",") {
 		if strings.TrimSpace(scope) != "" {
-			scopes = append(scopes, strings.TrimSpace(scope))
+			token.Scopes = append(token.Scopes, strings.TrimSpace(scope))
 		}
 	}
-	// Return isLegacyUnscoped flag: true if token has no scopes (pre-scope-enforcement token)
-	isLegacyUnscoped := len(scopes) == 0
-	return username, scopes, isLegacyUnscoped, true
+	return token, nil
 }
 
 func (s *apiTokenStore) list(username string) ([]apiTokenInfo, error) {

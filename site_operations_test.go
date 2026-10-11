@@ -55,11 +55,28 @@ func newSiteOperationFixture(t *testing.T, status int, response string) (*App, *
 	}
 	t.Cleanup(func() { delete(siteOperationRoutes, "test.echo") })
 	app := &App{
-		Config: Config{AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")},
-		Auth:   Auth{Enabled: true, Username: "admin"},
-		Jobs:   newJobsWithDB(db, 1),
+		Config:    Config{AuditLog: filepath.Join(t.TempDir(), "audit.jsonl")},
+		Auth:      Auth{Enabled: true, Username: "admin"},
+		Jobs:      newJobsWithDB(db, 1),
+		APITokens: &apiTokenStore{db: db},
 	}
 	return app, seen
+}
+
+// issuedTokenRequest is a request authenticated by a real stored token, so a
+// queued operation can be revalidated against that token when it runs.
+func issuedTokenRequest(t *testing.T, app *App, method, target, body, user string, scopes ...string) (*http.Request, string) {
+	t.Helper()
+	allowed := map[string]bool{}
+	for _, scope := range scopes {
+		allowed[scope] = true
+	}
+	item, _, err := app.APITokens.createScoped(user, "queued work", nil, scopes, allowed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := tokenRequest(method, target, body, user, scopes...)
+	return r.WithContext(context.WithValue(r.Context(), apiTokenIDKey{}, item.ID)), item.ID
 }
 
 func tokenRequest(method, target, body, user string, scopes ...string) *http.Request {
@@ -84,7 +101,8 @@ func TestSiteOperationQueuesAndReplaysAsTheRequester(t *testing.T) {
 	app, seen := newSiteOperationFixture(t, http.StatusOK, `{"commit":"abc123"}`)
 	body := `{"site":"shop","ref":"main"}`
 	response := httptest.NewRecorder()
-	app.siteOperation("test.echo")(response, tokenRequest(http.MethodPost, "/api/test/echo?dry=1", body, "admin", "admin:operate"))
+	request, _ := issuedTokenRequest(t, app, http.MethodPost, "/api/test/echo?dry=1", body, "admin", "admin:operate")
+	app.siteOperation("test.echo")(response, request)
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("status = %d %s, want 202", response.Code, response.Body.String())
 	}
@@ -355,5 +373,62 @@ func TestSiteOperationsAreRouted(t *testing.T) {
 	}
 	if strings.Contains(string(source), `app.Auth.RequireAdministrator(app.siteOperation("git.deploy"))`) {
 		t.Fatal("Git deployment must not be administrator-only")
+	}
+}
+
+// Revoking or expiring a token cancels operations it queued that have not
+// started; the handler never runs under the revoked identity.
+func TestQueuedSiteOperationRefusesRevokedToken(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		revoke func(t *testing.T, app *App, id string)
+	}{
+		{name: "revoked", revoke: func(t *testing.T, app *App, id string) {
+			if _, err := app.APITokens.db.Exec(`UPDATE api_tokens SET revoked_at = unixepoch() WHERE id = ?`, id); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "expired", revoke: func(t *testing.T, app *App, id string) {
+			if _, err := app.APITokens.db.Exec(`UPDATE api_tokens SET expires_at = unixepoch() - 1 WHERE id = ?`, id); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "deleted", revoke: func(t *testing.T, app *App, id string) {
+			if _, err := app.APITokens.db.Exec(`DELETE FROM api_tokens WHERE id = ?`, id); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app, seen := newSiteOperationFixture(t, http.StatusOK, `{}`)
+			request, id := issuedTokenRequest(t, app, http.MethodPost, "/api/test/echo", `{"site":"shop"}`, "admin", "admin:operate")
+			response := httptest.NewRecorder()
+			app.siteOperation("test.echo")(response, request)
+			if response.Code != http.StatusAccepted {
+				t.Fatalf("status = %d %s, want 202", response.Code, response.Body.String())
+			}
+			test.revoke(t, app, id)
+			if _, err := app.handleSiteOperationJob(context.Background(), claimSiteOperation(t, app)); err == nil || !strings.Contains(err.Error(), "revoked or expired") {
+				t.Fatalf("replay error = %v, want revoked token refusal", err)
+			}
+			if seen.path != "" {
+				t.Fatal("operation ran under a revoked token")
+			}
+		})
+	}
+}
+
+func TestQueuedSiteOperationWithoutTokenIdentityIsRefused(t *testing.T) {
+	app, seen := newSiteOperationFixture(t, http.StatusOK, `{}`)
+	response := httptest.NewRecorder()
+	app.siteOperation("test.echo")(response, tokenRequest(http.MethodPost, "/api/test/echo", `{"site":"shop"}`, "admin", "admin:operate"))
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d %s, want 202", response.Code, response.Body.String())
+	}
+	if _, err := app.handleSiteOperationJob(context.Background(), claimSiteOperation(t, app)); err == nil || !strings.Contains(err.Error(), "token identity") {
+		t.Fatalf("replay error = %v, want missing token identity refusal", err)
+	}
+	if seen.path != "" {
+		t.Fatal("operation ran without a revalidated token")
 	}
 }

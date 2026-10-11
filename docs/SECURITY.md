@@ -24,6 +24,8 @@ StePanel runs as a privileged control panel for WordPress sites. Security is enf
 - ✅ Legacy unscoped tokens refused and revoked at a host-wide hard cutoff (see LEGACY_TOKEN_MIGRATION.md)
 - ✅ TOTP enforcement for admin login
 - ✅ Session management with secure cookies
+- ✅ Customer token scopes are re-checked against the member's current role and tenant suspension on every request, not only at issuance
+- ✅ Queued work follows the token that queued it: a site operation queued by an API token records the token ID and runs only if that token is still active (not revoked, expired, or deleted, and still owned by the requester) when a worker starts it. Revoking a token cancels its queued operations; an operation already running completes, and its outcome is recorded normally
 
 ### Container Security
 - ✅ Registry allowlist (docker.io, ghcr.io, quay.io only)

@@ -8,6 +8,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- Fixed full recovery-matrix fixture naming so every repetition receives
+  distinct site/account identities, and added a 50-repeat collision and name-
+  length preflight to CI.
 - Fixed the Sites workspace layout, made navigation follow the visible section,
   improved responsive site summaries, and regenerated the corresponding GUI
   screenshots from the live interface.

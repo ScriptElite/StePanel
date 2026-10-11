@@ -180,6 +180,12 @@ jobs:
       - run: bash -n deploy/lab/task-safeguards-smoke.sh
       - run: bash -n deploy/lab/app-lifecycle-smoke.sh
       - run: bash -n deploy/lab/recovery-matrix-smoke.sh
+      - name: Check recovery-matrix identity uniqueness at maximum repetitions
+        env:
+          RECOVERY_MATRIX_FULL: '1'
+          RECOVERY_MATRIX_REPEATS: '50'
+          RECOVERY_MATRIX_VALIDATE_ONLY: '1'
+        run: bash deploy/lab/recovery-matrix-smoke.sh
       - run: bash -n deploy/lab/sftp-access-smoke.sh deploy/lab/ftps-access-smoke.sh deploy/lab/sitectl-acl-smoke.sh deploy/lab/python-dependencies-smoke.sh
       - run: bash -n deploy/integrations/*
       - name: Lint shell scripts

@@ -4,12 +4,53 @@
 # minutes to the disposable-host installation smoke.
 set -Eeuo pipefail
 
-[[ $EUID -eq 0 ]] || { echo 'recovery matrix must run as root' >&2; exit 1; }
-command -v systemctl >/dev/null || { echo 'recovery matrix requires systemd' >&2; exit 77; }
-
 repo=/work/deploy/lab
 : "${RECOVERY_MATRIX_PREFIX:=ci-matrix-$(date +%s)}"
 base_prefix=$RECOVERY_MATRIX_PREFIX
+run_token=$(printf '%s' "$base_prefix" | sha256sum | cut -c1-8)
+
+full_site() {
+  local phase=$1 boundary=$2 prefix stage name
+  prefix="m${run_token}-r${matrix_iteration}"
+  case "$phase:$boundary" in
+    suspend:suspend:before-persist) stage=before ;;
+    suspend:suspend:persisted) stage=persist ;;
+    *) stage=${boundary##*:} ;;
+  esac
+  printf -v name '%s-f-%s-%s' "$prefix" "${phase:0:4}" "$stage"
+  if (( ${#name} > 32 )); then
+    echo "generated recovery-matrix identity exceeds 32 characters: $name" >&2
+    return 1
+  fi
+  printf '%s' "$name"
+}
+
+validate_full_site_names() {
+  local iteration pair phase boundary name
+  local -A seen=()
+  local cases=(
+    'cpmove cpmove:activate'
+    'backup backup:init' 'backup backup:archive' 'backup backup:verify' 'backup backup:commit'
+    'restore restore:database' 'restore restore:verify' 'restore restore:extract'
+    'restore restore:activate' 'restore restore:commit'
+    'terminate terminate:init' 'terminate terminate:backup' 'terminate terminate:database'
+    'terminate terminate:routes' 'terminate terminate:proxies' 'terminate terminate:tasks'
+    'terminate terminate:services' 'terminate terminate:site-state' 'terminate terminate:ownership'
+    'suspend suspend:before-persist' 'suspend suspend:persisted'
+  )
+  for iteration in $(seq 1 "$repeats"); do
+    matrix_iteration=$iteration
+    for pair in "${cases[@]}"; do
+      read -r phase boundary <<<"$pair"
+      name=$(full_site "$phase" "$boundary") || return 1
+      if [[ -n ${seen[$name]+present} ]]; then
+        echo "recovery-matrix identity collision at iteration $iteration: $name" >&2
+        return 1
+      fi
+      seen[$name]=1
+    done
+  done
+}
 
 run_import_recovery() {
   CPMOVE_RECOVERY_SMOKE_SITE="${RECOVERY_MATRIX_PREFIX}-cpmove" \
@@ -44,6 +85,7 @@ run_deploy_recovery() {
 
 run_matrix_once() {
   local iteration=$1
+  matrix_iteration=$iteration
   RECOVERY_MATRIX_PREFIX="${base_prefix}-r${iteration}"
   echo "recovery matrix iteration ${iteration}/${repeats} (prefix ${RECOVERY_MATRIX_PREFIX})"
   run_import_recovery
@@ -56,16 +98,6 @@ run_matrix_once() {
 # journal boundary. Each run uses a unique site/account prefix, so a failed
 # boundary cannot contaminate the next case.
 if [[ ${RECOVERY_MATRIX_FULL:-0} == 1 ]]; then
-  matrix_prefix=${RECOVERY_MATRIX_PREFIX//[^a-zA-Z0-9_-]/-}
-  matrix_prefix=${matrix_prefix:0:12}
-  # Site and account names are limited to 32 characters; the boundary name
-  # (for example suspend:before-persist) would otherwise push past it.
-  full_site() {
-    local name
-    name=$(printf '%s-f-%s-%s' "$matrix_prefix" "${1:0:4}" "${2##*:}")
-    printf '%s' "${name:0:32}"
-  }
-
   site=$(full_site cpmove cpmove:activate)
   CPMOVE_RECOVERY_SMOKE_SITE="$site" CPMOVE_KILL_AT=cpmove:activate bash "$repo/cpmove-recovery-smoke.sh"
 
@@ -120,6 +152,17 @@ repeats=${RECOVERY_MATRIX_REPEATS:-1}
   echo 'RECOVERY_MATRIX_REPEATS must be an integer from 1 through 50' >&2
   exit 64
 }
+if [[ ${RECOVERY_MATRIX_FULL:-0} == 1 ]]; then
+  validate_full_site_names
+  if [[ ${RECOVERY_MATRIX_VALIDATE_ONLY:-0} == 1 ]]; then
+    echo "recovery matrix identity validation passed ($repeats iterations)"
+    exit 0
+  fi
+fi
+
+[[ $EUID -eq 0 ]] || { echo 'recovery matrix must run as root' >&2; exit 1; }
+command -v systemctl >/dev/null || { echo 'recovery matrix requires systemd' >&2; exit 77; }
+
 for iteration in $(seq 1 "$repeats"); do
   run_matrix_once "$iteration"
 done

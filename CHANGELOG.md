@@ -15,8 +15,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
-- Updated the rootless-runner permission smoke to pass the persisted site Unix
-  identity required by the current runner helper contract.
+- Updated the rootless-runner permission smoke to use the prepared site's
+  persisted filesystem owner, rather than deriving a legacy Unix identity.
 - Routed managed site transaction snapshots and rollback renames through the
   typed root broker in production; the installed-host smoke now imports twice
   into the same site, with replay-safe TOTP logins, to cover replacement of

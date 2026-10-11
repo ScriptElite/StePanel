@@ -37,14 +37,17 @@ command -v podman >/dev/null || { echo 'runner-perm smoke requires podman' >&2; 
 : "${STEPANEL_APP_ROOT:=/var/lib/ste-panel/apps}"
 [[ -d $STEPANEL_APP_ROOT ]] || { echo "STEPANEL_APP_ROOT ($STEPANEL_APP_ROOT) is not a directory" >&2; exit 77; }
 : "${RUNNER_TEST_SITE:=ci-smoke}"
-[[ -d /var/www/sites/$RUNNER_TEST_SITE ]] || { echo "site $RUNNER_TEST_SITE has not been prepared" >&2; exit 77; }
+[[ $RUNNER_TEST_SITE =~ ^[a-z0-9_-]{1,32}$ ]] || { echo 'RUNNER_TEST_SITE is invalid' >&2; exit 1; }
+site_root="/var/www/sites/$RUNNER_TEST_SITE"
+[[ -d $site_root && ! -L $site_root ]] || { echo "site $RUNNER_TEST_SITE has not been prepared" >&2; exit 77; }
 : "${RUNNER_TEST_IMAGE:=}"
 [[ -n $RUNNER_TEST_IMAGE ]] || { echo 'set RUNNER_TEST_IMAGE to a pinned image (name@sha256:...) with /bin/sh' >&2; exit 77; }
 
-hash=$(printf '%s' "$RUNNER_TEST_SITE" | sha256sum); hash=${hash%% *}
-prefix=${RUNNER_TEST_SITE:0:18}; prefix=${prefix//_/-}
-site_user="sp-${prefix}-${hash:0:8}"
-id "$site_user" >/dev/null 2>&1 || { echo "sp-* user for $RUNNER_TEST_SITE not found ($site_user)" >&2; exit 77; }
+site_user=$(stat -c '%U' -- "$site_root")
+[[ $site_user =~ ^sp-[a-z0-9][a-z0-9-]{1,28}$ ]] || { echo "site $RUNNER_TEST_SITE is not owned by a managed site account ($site_user)" >&2; exit 1; }
+site_passwd=$(getent passwd "$site_user") || { echo "managed account $site_user is missing" >&2; exit 1; }
+site_home=$(cut -d: -f6 <<<"$site_passwd")
+[[ $site_home == "$site_root" ]] || { echo "managed account $site_user belongs to $site_home, not $site_root" >&2; exit 1; }
 
 # Reproduce the exact permission profile the panel writes: file inside the
 # stepanel-owned app root, mode 0600 owned by stepanel. Nothing else is set up
@@ -59,7 +62,6 @@ cat /src/stepanel-runner-source.txt > /artifact/proof-source
 EOF
 trap 'rm -f -- "$script"' EXIT
 
-site_root="/var/www/sites/$RUNNER_TEST_SITE"
 artifact="$site_root/.stepanel-artifact"
 scratch="$site_root/.stepanel-runner-scratch"
 

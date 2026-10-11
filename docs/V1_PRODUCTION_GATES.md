@@ -25,6 +25,21 @@ release may not be described as **StePanel 1.0 — production-ready for
 operator-managed single-host deployments** until every P0 item has executable
 evidence recorded in this document or a linked result artifact.
 
+### The 1.0 deployment promise
+
+If every P0 gate below closes, the release may make exactly this promise:
+
+> StePanel 1.0 supports operator-managed, single-host PHP/WordPress hosting
+> on the Linux distribution, database, web server, and PHP runtime matrix
+> published with the release. High availability, mutually hostile
+> multi-tenant hosting, and hands-off disaster recovery are not included.
+
+Docker and Kubernetes packaging remain single-replica control-plane
+packaging ([CERTIFIED_ENVELOPE.md](./CERTIFIED_ENVELOPE.md)); they must not be
+described as high availability while the control plane uses host-local state
+and host-bound lifecycle operations. Site, domain, and account counts may be
+published only as a certified envelope, never as targets.
+
 ### P0 — required before 1.0
 
 | Requirement | Current status | Evidence / remaining work |
@@ -34,29 +49,33 @@ evidence recorded in this document or a linked result artifact.
 | Preserve restrictive imported file modes | ✅ Implemented | TAR/ZIP extraction preserves ordinary permission bits and strips special bits; mode tests pass. |
 | Realistic disk admission and reservations | ✅ Done | Known `Content-Length` is admitted at the actual archive size; unknown-length streams reserve 256 MiB ahead of the bytes written up to the upload ceiling; cPanel database restores also reserve space on a local database data directory. |
 | VM crash testing: power loss, ENOSPC, DB outage, broker interruption, worker death | ⚠️ Partial | The [2026-10-09 KVM run](./lab-results/2026-10-09-rocky9-kvm-certification.md) passed abrupt guest kills (idle and mid-backup) and a real ENOSPC backup; ENOSPC beyond backup and physical power loss remain open. |
-| Repeated recovery scenarios | ⚠️ Partial | 114 repository-level SIGKILL repetitions are recorded and the full 105-drill matrix passed once on a KVM guest; the VM failure matrix must repeat each scenario and publish results. |
+| Repeated recovery scenarios | ⚠️ Open | 114 repository-level SIGKILL repetitions are recorded and the full 105-drill matrix passed once on a KVM guest. The [2026-10-11 two-iteration attempt](./lab-results/2026-10-11-rocky9-repeat-matrix-attempt.md) failed in iteration 2 (zero-byte audit lock). The fix, its unit/race tests, and a focused guest smoke are not equivalent to a clean repeated full-matrix pass; this gate stays open until the full matrix, including the affected termination/cpmove scenarios, passes every repetition on the fixed build. The matrix must also cover worker kill, broker kill, control-plane database failure, and interrupted release activation. |
+| Cross-process data consistency | ✅ Implemented; needs matrix evidence | The panel and job worker share the control-plane database. Accounts and site assignments are written per row with the observed payload as a compare-and-swap (`TestStaleAccountStorePersistsOnlyItsOwnChange`, `TestStaleAccountStoreConflictingChangeIsRejected`); deployment history appends with a revision check (`TestDBStoresSharingHistoryDoNotLoseRecords`); API tokens are individual rows. A conflicting write fails with a retryable error instead of overwriting. Two-process soak evidence on an installed host remains to be recorded. |
+| Authoritative deployment status | ✅ Implemented | Activation is the commit point for Git deploy, pipeline release, and Git rollback. A failure before activation fails the job; after activation the job succeeds with `outcome` `activated` or `committed_reconciliation_pending`, and history records the completed activation (`TestCommittedReleaseIsNeverReportedAsCancelled`). |
+| Application-level WordPress restore proof | ❌ Open | A StePanel-maintained WordPress/PHP restore rehearsal must prove database import, matching configuration and credentials, PHP-FPM startup, virtual-host routing, and a real HTTP application probe. The operator-supplied `STEPANEL_RECOVERY_PROOF_COMMAND` hook is not sufficient release evidence. |
+| Operational notifications | ❌ Open | SMTP and generic webhook alerts for failed, dead-lettered, and degraded jobs, with delivery failures visible to the operator. |
+| Capacity certification | ❌ Open | [CERTIFIED_ENVELOPE.md](./CERTIFIED_ENVELOPE.md) lists targets (500 sites, 2,000 domains, 100 accounts, 2 concurrent mutations), not measurements. A reproducible, published run must certify the envelope before any count is claimed. |
+| Upgrade and rollback | ⚠️ Partial | The N-1 upgrade smoke (`deploy/lab/upgrade-smoke.sh`, last passing run `37940877632` on 2026-10-09) upgrades the previous release, verifies the audit chain and control-plane state, and proves the installer transaction rolls a deliberately broken candidate back to the running version and its intact database. Remaining: a published list of supported upgrade paths, versioned state-migration evidence for each, a clean-install run, and a tested rollback recorded for the release candidate. |
+| Security lifecycle | ⚠️ Partial | [SECURITY.md](../SECURITY.md) defines private vulnerability reporting and the threat model. Remaining: an independent security review of the release candidate and a supported-version patch policy that applies after 1.0. |
 | Typed privileged-operation protocol | ✅ Implemented | Production callsites use concrete root-broker request types, including environment/resource operations, database cleanup/reconciliation, and managed route deletion. `Request` no longer contains a generic helper payload, the broker has no generic handler, and production helper wrappers fail closed without a typed route. A regression test rejects the removed request type. |
-| Release documentation reconciled with executable evidence | ⚠️ Open | Every checked claim must link to a current test result, hosted run, or reproducible artifact; stale claims must be downgraded or removed. |
+| Release documentation reconciled with executable evidence | ⚠️ Open | Every checked claim must link to a current test result, hosted run, or reproducible artifact; stale claims must be downgraded or removed. The release must also publish the supported OS/runtime matrix, upgrade runbooks, a disaster-recovery runbook, and the support/escalation path. |
 
 ### P1 — strongly recommended for 1.0
 
 These items do not silently become release claims. They are tracked separately:
 
-- SMTP and generic webhook notifications for failed or degraded operations.
 - Reversible site suspend/resume with reason, audit event, and capability
   reporting.
 - First-class blank PHP, WordPress, Git, and Node site creation workflows.
   Blank PHP sites: implemented (`POST /api/sites`, durable `site.create` job,
   `site_creation_test.go`); WordPress, Git and Node templates are open.
-- Recovery Proof is available through the explicitly configured
-  `STEPANEL_RECOVERY_PROOF_COMMAND`. The command receives `<site> <stage>` and
-  must restore the staged files/database, regenerate configuration, activate
-  services, and fail unless an application HTTP health probe succeeds. A
-  rehearsal records the stronger `application` level only when that command
-  exits successfully; without it, archive-level status continues to say that
-  database import and application startup were not proven. An archive-only
-  rehearsal is not sufficient evidence for production WordPress approval; the
-  release record must include a successful application-level proof.
+- The operator-supplied `STEPANEL_RECOVERY_PROOF_COMMAND` hook remains
+  available for non-WordPress applications. It receives `<site> <stage>`,
+  and a rehearsal records the `application` level only when the command
+  exits successfully. It does not satisfy the P0 WordPress restore proof.
+
+SMTP/webhook notifications and the WordPress application-level restore proof
+were moved from P1 to P0 on 2026-10-11.
 
 ### Test coverage ratchet
 

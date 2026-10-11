@@ -34,6 +34,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- The production gates now state the exact 1.0 deployment promise and add
+  P0 gates for cross-process data consistency, authoritative deployment
+  status, a StePanel-maintained WordPress restore proof, operational
+  notifications, capacity certification, upgrade and rollback evidence, and
+  the security lifecycle. The repeated recovery-matrix gate now states that
+  the audit-lock fix and focused smoke do not replace a clean repeated
+  full-matrix rerun.
 - The SSH server inventory now inspects servers concurrently (at most four at
   a time), gives each host its own 15-second deadline within a 30-second
   limit bound to the HTTP request, and caps subprocess output through the

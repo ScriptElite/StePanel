@@ -253,6 +253,9 @@ fi
 CPMOVE_SMOKE_SITE=ci-import bash /work/deploy/lab/cpmove-import-smoke.sh
 # Re-import into the same tenant to prove that existing live trees are moved
 # into recovery storage through the privileged broker, not by the worker.
+# The disposable administrator's TOTP code is single-use; wait for the next
+# counter before the second independent smoke login.
+sleep $((31 - $(date +%s) % 30))
 CPMOVE_SMOKE_SITE=ci-import bash /work/deploy/lab/cpmove-import-smoke.sh
 bash /work/deploy/lab/cpmove-recovery-smoke.sh
 bash /work/deploy/lab/dbctl-lock-smoke.sh

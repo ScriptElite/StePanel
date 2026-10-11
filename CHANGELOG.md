@@ -10,7 +10,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - Routed managed site transaction snapshots and rollback renames through the
   typed root broker in production; the installed-host smoke now imports twice
-  into the same site to cover replacement of tenant-owned live content.
+  into the same site, with replay-safe TOTP logins, to cover replacement of
+  tenant-owned live content.
 - Stabilized the cross-handle lease-renewal test by waiting for its first
   durable renewal and allowing normal CI scheduling jitter.
 - Fixed full recovery-matrix fixture naming so every repetition receives

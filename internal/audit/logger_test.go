@@ -1266,3 +1266,59 @@ func TestAuditStaleLockReclaimPreservesReplacementLock(t *testing.T) {
 		t.Fatalf("replacement lock missing: %v", err)
 	}
 }
+
+func TestAuditDoesNotReclaimNonRegularLock(t *testing.T) {
+	logger, _ := newTestLogger(t)
+	lockPath := logger.path + ".lock"
+	target := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.WriteFile(target, []byte("999999999 1"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, lockPath); err != nil {
+		t.Fatal(err)
+	}
+	if reclaimStaleLock(lockPath) {
+		t.Fatal("reclaimed a symlinked audit lock")
+	}
+	if _, err := os.Lstat(lockPath); err != nil {
+		t.Fatalf("symlinked lock removed: %v", err)
+	}
+}
+
+func TestAuditLockReleaseToleratesMissingLock(t *testing.T) {
+	root := t.TempDir()
+	lockPath := filepath.Join(root, "audit.lock")
+	unlock, err := createAuditLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := unlock(); err != nil {
+		t.Fatalf("release of an already-removed lock: %v", err)
+	}
+}
+
+func TestAuditLockReleaseReportsOwnerStatFailure(t *testing.T) {
+	root := t.TempDir()
+	lockPath := filepath.Join(root, "audit.lock")
+	unlock, err := createAuditLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unlock(); err != nil {
+		t.Fatal(err)
+	}
+	// The owner descriptor is closed after the first release, so a repeated
+	// release cannot prove inode identity and must not touch the path.
+	if err := os.WriteFile(lockPath, []byte("other owner"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := unlock(); err == nil {
+		t.Fatal("repeated release succeeded without a verifiable owner")
+	}
+	if _, err := os.Lstat(lockPath); err != nil {
+		t.Fatalf("repeated release removed another owner's lock: %v", err)
+	}
+}

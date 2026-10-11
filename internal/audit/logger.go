@@ -248,9 +248,6 @@ func createAuditLock(lockPath string) (func() error, error) {
 	if err := auditSync(temp); err != nil {
 		return nil, fmt.Errorf("sync audit lock metadata: %w", err)
 	}
-	if _, err := temp.Stat(); err != nil {
-		return nil, fmt.Errorf("stat audit lock metadata: %w", err)
-	}
 	if err := os.Link(tempPath, lockPath); err != nil {
 		return nil, err
 	}
@@ -306,11 +303,7 @@ func reclaimStaleLock(lockFile string) bool {
 		// after creating the path but before writing owner metadata. New locks
 		// are atomically published with complete contents; only reclaim a
 		// legacy empty lock after a short grace period and an inode/size recheck.
-		info, err := auditStat(lockFile)
-		if err != nil || info.Size() != 0 || time.Since(info.ModTime()) < emptyAuditLockStaleAfter {
-			return false
-		}
-		if !os.SameFile(judged, info) {
+		if judged.Size() != 0 || time.Since(judged.ModTime()) < emptyAuditLockStaleAfter {
 			return false
 		}
 		return removeLockIfUnchanged(lockFile, judged)

@@ -15,6 +15,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- Deployment history is now appended with a revision compare-and-swap and
+  read from the control-plane database on every listing. The panel and the
+  job worker each cached the whole history and overwrote the shared row on
+  every write, so a release run by the worker was invisible to the panel API
+  and either process could silently erase the other's records. This hid the
+  build failure detail in the quota install smoke's diagnostics.
+- Restored `internal/audit` to its 95% coverage floor by removing an
+  unreachable stat of the temporary lock file, reusing the initial lock
+  stat for legacy empty locks, and covering symlinked-lock, missing-lock, and
+  repeated-release cases.
 - Stale audit-lock reclaim now removes the lock only if it is still the same
   inode, modification time, and size that was judged stale. Previously two
   waiters could reclaim the same dead lock, and the slower one would delete

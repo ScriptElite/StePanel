@@ -30,6 +30,11 @@ type Record struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+const (
+	maxRecords      = 1000
+	dbWriteAttempts = 16
+)
+
 type Store struct {
 	mu     sync.RWMutex
 	path   string
@@ -83,28 +88,86 @@ func Open(path string) (*Store, error) {
 func (s *Store) Add(record Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	previous := append([]Record(nil), s.values...)
-	s.values = append([]Record{record}, s.values...)
-	// Keep newest-first order even when a spooled record is replayed after
-	// newer ones were written.
-	sort.SliceStable(s.values, func(i, j int) bool { return s.values[i].CreatedAt.After(s.values[j].CreatedAt) })
-	if len(s.values) > 1000 {
-		s.values = s.values[:1000]
-	}
-	data, err := json.MarshalIndent(s.values, "", "  ")
-	if err != nil {
-		return err
-	}
 	if s.db != nil {
-		err = s.persistDBPayload(data)
-	} else {
-		err = statefile.WriteAtomic(s.path, append(data, '\n'), 0600)
+		return s.addDB(record)
 	}
+	next := withRecord(s.values, record)
+	data, err := json.MarshalIndent(next, "", "  ")
 	if err != nil {
-		s.values = previous
 		return err
 	}
+	if err := statefile.WriteAtomic(s.path, append(data, '\n'), 0600); err != nil {
+		return err
+	}
+	s.values = next
 	return nil
+}
+
+// withRecord returns a new newest-first history containing record. Order is
+// by creation time even when a spooled record is replayed after newer ones
+// were written.
+func withRecord(values []Record, record Record) []Record {
+	next := append([]Record{record}, values...)
+	sort.SliceStable(next, func(i, j int) bool { return next[i].CreatedAt.After(next[j].CreatedAt) })
+	if len(next) > maxRecords {
+		next = next[:maxRecords]
+	}
+	return next
+}
+
+// addDB appends to the durable history with a revision compare-and-swap. The
+// panel and the job worker are separate processes sharing this row; writing
+// a process's cached history wholesale would erase records the other process
+// added since it last read the row.
+func (s *Store) addDB(record Record) error {
+	for attempt := 0; attempt < dbWriteAttempts; attempt++ {
+		current, revision, err := s.readDB()
+		if err != nil {
+			return err
+		}
+		next := withRecord(current, record)
+		data, err := json.MarshalIndent(next, "", "  ")
+		if err != nil {
+			return err
+		}
+		var result sql.Result
+		if revision < 0 {
+			result, err = s.db.Exec(`INSERT INTO state_blobs (name, payload, updated_at, revision) VALUES ('deployments', ?, unixepoch(), 1) ON CONFLICT(name) DO NOTHING`, data)
+		} else {
+			result, err = s.db.Exec(`UPDATE state_blobs SET payload = ?, updated_at = unixepoch(), revision = revision + 1 WHERE name = 'deployments' AND revision = ?`, data, revision)
+		}
+		if err != nil {
+			return err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if changed == 1 {
+			s.values = next
+			return nil
+		}
+	}
+	return errors.New("deployment history changed concurrently; retry limit reached")
+}
+
+// readDB returns the durable history and its revision, or revision -1 when
+// no history row exists yet.
+func (s *Store) readDB() ([]Record, int64, error) {
+	var payload []byte
+	var revision int64
+	err := s.db.QueryRow(`SELECT payload, revision FROM state_blobs WHERE name = 'deployments'`).Scan(&payload, &revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return []Record{}, -1, nil
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	values := []Record{}
+	if err := json.Unmarshal(payload, &values); err != nil {
+		return nil, 0, err
+	}
+	return values, revision, nil
 }
 
 func (s *Store) persistDB() error {
@@ -121,8 +184,15 @@ func (s *Store) persistDBPayload(data []byte) error {
 }
 
 func (s *Store) List(site string) []Record {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Records written by the job worker process are visible only in the
+	// database. Fall back to the last known history if it cannot be read.
+	if s.db != nil {
+		if values, _, err := s.readDB(); err == nil {
+			s.values = values
+		}
+	}
 	out := make([]Record, 0, len(s.values))
 	for _, record := range s.values {
 		if site == "" || record.Site == site {

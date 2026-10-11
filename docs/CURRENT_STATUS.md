@@ -1,7 +1,7 @@
 # StePanel Project Status
 
 **Version:** v0.7.0 (Operator Beta)  
-**Last Updated:** 2026-10-10
+**Last Updated:** 2026-10-11
 **Status:** Operator Beta; not approved for v1.0 production release
 
 ---
@@ -17,6 +17,12 @@ StePanel v0.7.0 is in Operator Beta — suitable for controlled single-host depl
 ## Release Gate Status
 
 See [V1_PRODUCTION_GATES.md](./V1_PRODUCTION_GATES.md) for complete gate requirements and acceptance criteria.
+
+The 2026-10-11 hosted install smoke passed on both Rocky Linux 9 and
+AlmaLinux 9, including one default interruption-matrix iteration per OS.
+Current CI and CodeQL also passed for the tested commit. This evidence is
+container-based and does not close Gate 5's repeated VM/power-loss/ENOSPC
+requirements; see the [run record](lab-results/2026-10-11-hosted-install-smoke.md).
 
 | Gate | Requirement | Status | Blocker |
 |------|-------------|--------|---------|

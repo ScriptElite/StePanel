@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- Recorded the 2026-10-11 Rocky Linux 9 and AlmaLinux 9 hosted installation
+  smoke results, including the default recovery matrix and explicit limits of
+  the container-based evidence.
+
 ### Changed
 
 - Routed managed site transaction snapshots and rollback renames through the

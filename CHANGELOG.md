@@ -19,7 +19,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   A repeated Rocky Linux 9 recovery drill exposed that an interrupted worker
   restart could leave a zero-byte lock that blocked audit-dependent requests.
   Added injected write, short-write, sync, and close failure coverage for lock
-  publication.
+  publication. Keep the lock inode open until release so immediate inode reuse
+  cannot make an unrelated replacement lock appear to be the original.
   Recorded the failed two-iteration matrix attempt and the focused patched-host
   cpmove pass; a successful full repeated-matrix rerun is still required.
 - Extended the disposable ext4 ENOSPC gate to exercise both backup creation

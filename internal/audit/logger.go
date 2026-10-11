@@ -222,14 +222,21 @@ func (l *defaultLogger) acquireLock() (string, func() error, error) {
 // by Write exposes a zero-byte lock if a process is killed between those
 // syscalls; every other process then treats that unowned file as permanently
 // held. Link publishes the already-written contents atomically while still
-// failing if another process owns the lock.
+// failing if another process owns the lock. Keep the inode open until release
+// so its identity cannot be reused after unlink.
 func createAuditLock(lockPath string) (func() error, error) {
 	temp, err := auditCreateTemp(filepath.Dir(lockPath), ".audit-lock-*")
 	if err != nil {
 		return nil, err
 	}
 	tempPath := temp.Name()
-	defer os.Remove(tempPath)
+	published := false
+	defer func() {
+		if !published {
+			_ = os.Remove(tempPath)
+			_ = auditClose(temp)
+		}
+	}()
 	metadata := fmt.Sprintf("%d %d %s", os.Getpid(), processStartTime(os.Getpid()), kernelBootID())
 	written, writeErr := auditLockWrite(temp, []byte(metadata))
 	if writeErr != nil {
@@ -244,33 +251,40 @@ func createAuditLock(lockPath string) (func() error, error) {
 		_ = temp.Close()
 		return nil, fmt.Errorf("sync audit lock metadata: %w", err)
 	}
-	info, err := temp.Stat()
-	if err != nil {
-		_ = temp.Close()
+	if _, err := temp.Stat(); err != nil {
 		return nil, fmt.Errorf("stat audit lock metadata: %w", err)
-	}
-	if err := auditClose(temp); err != nil {
-		return nil, fmt.Errorf("close audit lock metadata: %w", err)
 	}
 	if err := os.Link(tempPath, lockPath); err != nil {
 		return nil, err
 	}
 	if err := os.Remove(tempPath); err != nil {
-		_ = removeAuditLockIfSame(lockPath, info)
+		_ = removeAuditLockIfSame(lockPath, temp)
 		return nil, fmt.Errorf("remove temporary audit lock: %w", err)
 	}
-	return func() error { return removeAuditLockIfSame(lockPath, info) }, nil
+	published = true
+	return func() error {
+		removeErr := removeAuditLockIfSame(lockPath, temp)
+		closeErr := auditClose(temp)
+		if removeErr != nil {
+			return removeErr
+		}
+		return closeErr
+	}, nil
 }
 
-func removeAuditLockIfSame(lockPath string, owner os.FileInfo) error {
-	current, err := os.Stat(lockPath)
+func removeAuditLockIfSame(lockPath string, owner *os.File) error {
+	ownerInfo, err := owner.Stat()
+	if err != nil {
+		return err
+	}
+	current, err := os.Lstat(lockPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if !os.SameFile(owner, current) {
+	if !os.SameFile(ownerInfo, current) {
 		return nil
 	}
 	return os.Remove(lockPath)

@@ -1053,20 +1053,24 @@ func TestCreateAuditLockWriteFailuresDoNotPublish(t *testing.T) {
 	}
 }
 
-func TestCreateAuditLockCloseFailureDoesNotPublish(t *testing.T) {
+func TestAuditLockReleaseReportsCloseFailure(t *testing.T) {
 	root := t.TempDir()
 	lockPath := filepath.Join(root, "audit.lock")
+	unlock, err := createAuditLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	originalClose := auditClose
 	auditClose = func(file *os.File) error {
 		_ = file.Close()
 		return errors.New("injected close failure")
 	}
 	t.Cleanup(func() { auditClose = originalClose })
-	if _, err := createAuditLock(lockPath); err == nil || !strings.Contains(err.Error(), "close audit lock metadata") {
-		t.Fatalf("createAuditLock error = %v, want metadata close failure", err)
+	if err := unlock(); err == nil || !strings.Contains(err.Error(), "injected close failure") {
+		t.Fatalf("unlock error = %v, want file close failure", err)
 	}
 	if _, err := os.Lstat(lockPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("failed lock was published: stat err=%v", err)
+		t.Fatalf("lock remains after release: stat err=%v", err)
 	}
 }
 

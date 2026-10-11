@@ -508,7 +508,7 @@ privileged broker and panel/worker services retain `PrivateDevices=true`.
 - [x] Multi-point process-kill/restart drills cover all 5 operations at repository level — `crash_drill_test.go` kills a child process with SIGKILL at every instrumented boundary of backup (4), file restore (4), termination (9), and account suspension (2), then runs the production startup recovery (`recoverUncleanShutdown`) or resumes the durable job and verifies the final state; deploy activation is covered by `TestReleaseActivationRecoversAfterProcessKill`. Hosted installed-host runs remain the evidence for real services
 - [x] No mysterious half-states discovered — the drills found two real leaks, both fixed: restore scratch trees under the import root and manager staging trees were never cleaned after a crash
 - [x] Recovery is deterministic at repository level — 114 consecutive SIGKILL drills (6 repetitions of all 19 kill points) recovered to the same verified state
-- [ ] Real disk exhaustion (ENOSPC) and host power loss on a disposable VM (partial: real ENOSPC during backup and abrupt QEMU kills pass on the 2026-10-09 KVM run; ENOSPC for publication/restore/import and physical power loss remain)
+- [ ] Real disk exhaustion (ENOSPC) and host power loss on a disposable VM (partial: backup ENOSPC passed in the 2026-10-09 KVM run; focused file-restore extraction ENOSPC passed on 2026-10-11 ([evidence](lab-results/2026-10-11-real-enospc-restore.md)); publication, import, database restore, and physical power loss remain)
 - [ ] Repeat the real-host recovery matrix 20–50 times per operation/fault
   combination, with post-boot invariant evidence retained (see
   `docs/REAL_HOST_FAILURE_MATRIX.md`)

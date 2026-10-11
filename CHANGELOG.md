@@ -15,10 +15,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- Publish audit-lock owner metadata atomically and reclaim stale empty locks.
+  A repeated Rocky Linux 9 recovery drill exposed that an interrupted worker
+  restart could leave a zero-byte lock that blocked audit-dependent requests.
+  Recorded the failed two-iteration matrix attempt and the focused patched-host
+  cpmove pass; a successful full repeated-matrix rerun is still required.
 - Extended the disposable ext4 ENOSPC gate to exercise both backup creation
   and file-restore extraction, checking that the live site survives and a
   retry succeeds after space is reclaimed. Recorded the focused KVM result;
-  the repeated and host-wide failure gates remain open.
+  the repeated and host-wide failure gates remain open. Updated the production
+  gate status to distinguish file extraction from database restore and
+  publication coverage.
 - Updated the rootless-runner permission smoke to use the prepared site's
   persisted filesystem owner, rather than deriving a legacy Unix identity.
 - Routed managed site transaction snapshots and rollback renames through the

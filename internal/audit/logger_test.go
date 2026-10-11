@@ -934,6 +934,58 @@ func TestAuditReclaimsLockOwnedByDeadProcess(t *testing.T) {
 	}
 }
 
+func TestAuditReclaimsStaleEmptyLock(t *testing.T) {
+	logger, _ := newTestLogger(t)
+	lockPath := logger.path + ".lock"
+	if err := os.WriteFile(lockPath, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().Add(-2 * emptyAuditLockStaleAfter)
+	if err := os.Chtimes(lockPath, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	if !reclaimStaleLock(lockPath) {
+		t.Fatal("stale empty lock was not reclaimed")
+	}
+}
+
+func TestAuditDoesNotReclaimFreshEmptyLock(t *testing.T) {
+	logger, _ := newTestLogger(t)
+	lockPath := logger.path + ".lock"
+	if err := os.WriteFile(lockPath, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if reclaimStaleLock(lockPath) {
+		t.Fatal("fresh empty lock was reclaimed during its publication grace period")
+	}
+}
+
+func TestAuditLockPublishesCompleteOwnerMetadata(t *testing.T) {
+	logger, _ := newTestLogger(t)
+	lockPath := logger.path + ".lock"
+	unlock, err := createAuditLock(lockPath)
+	if err != nil {
+		t.Fatalf("create audit lock: %v", err)
+	}
+	contents, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fields := strings.Fields(string(contents)); len(fields) < 2 {
+		t.Fatalf("published audit lock metadata = %q, want pid and process start time", contents)
+	}
+	leftovers, err := filepath.Glob(filepath.Join(filepath.Dir(lockPath), ".audit-lock-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("temporary audit lock files remain: %v", leftovers)
+	}
+	if err := unlock(); err != nil {
+		t.Fatalf("release audit lock: %v", err)
+	}
+}
+
 func TestAuditReclaimsLockFromPreviousBoot(t *testing.T) {
 	logger, _ := newTestLogger(t)
 	lockPath := logger.path + ".lock"

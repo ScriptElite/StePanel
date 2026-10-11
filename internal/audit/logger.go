@@ -20,6 +20,7 @@ import (
 
 const maxAuditLogBytes int64 = 256 << 20
 const AuditKeyPath = "/etc/stepanel-audit.key"
+const emptyAuditLockStaleAfter = time.Second
 
 var mu sync.Mutex
 var persistenceErr error
@@ -200,21 +201,12 @@ func (l *defaultLogger) acquireLock() (string, func() error, error) {
 	lockFile := l.path + ".lock"
 
 	for attempts := 0; attempts < auditLockTries; attempts++ {
-		file, err := os.OpenFile(lockFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		unlock, err := createAuditLock(lockFile)
 		if err == nil {
-			if _, writeErr := fmt.Fprintf(file, "%d %d %s", os.Getpid(), processStartTime(os.Getpid()), kernelBootID()); writeErr != nil {
-				_ = file.Close()
-				_ = os.Remove(lockFile)
-				return "", nil, fmt.Errorf("write audit lock: %w", writeErr)
-			}
-			if closeErr := file.Close(); closeErr != nil {
-				_ = os.Remove(lockFile)
-				return "", nil, fmt.Errorf("close audit lock: %w", closeErr)
-			}
-			return lockFile, func() error { return os.Remove(lockFile) }, nil
+			return lockFile, unlock, nil
 		}
 		if !errors.Is(err, os.ErrExist) {
-			return "", nil, fmt.Errorf("acquire audit lock: %w", err)
+			return "", nil, fmt.Errorf("create audit lock: %w", err)
 		}
 		if reclaimStaleLock(lockFile) {
 			continue
@@ -224,15 +216,84 @@ func (l *defaultLogger) acquireLock() (string, func() error, error) {
 	return "", nil, errors.New("timeout acquiring audit lock")
 }
 
+// createAuditLock writes complete owner metadata to a private temporary inode
+// before hard-linking it into the shared lock path. O_CREATE|O_EXCL followed
+// by Write exposes a zero-byte lock if a process is killed between those
+// syscalls; every other process then treats that unowned file as permanently
+// held. Link publishes the already-written contents atomically while still
+// failing if another process owns the lock.
+func createAuditLock(lockPath string) (func() error, error) {
+	temp, err := auditCreateTemp(filepath.Dir(lockPath), ".audit-lock-*")
+	if err != nil {
+		return nil, err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if _, err := fmt.Fprintf(temp, "%d %d %s", os.Getpid(), processStartTime(os.Getpid()), kernelBootID()); err != nil {
+		_ = temp.Close()
+		return nil, fmt.Errorf("write audit lock metadata: %w", err)
+	}
+	if err := auditSync(temp); err != nil {
+		_ = temp.Close()
+		return nil, fmt.Errorf("sync audit lock metadata: %w", err)
+	}
+	info, err := temp.Stat()
+	if err != nil {
+		_ = temp.Close()
+		return nil, fmt.Errorf("stat audit lock metadata: %w", err)
+	}
+	if err := auditClose(temp); err != nil {
+		return nil, fmt.Errorf("close audit lock metadata: %w", err)
+	}
+	if err := os.Link(tempPath, lockPath); err != nil {
+		return nil, err
+	}
+	if err := os.Remove(tempPath); err != nil {
+		_ = removeAuditLockIfSame(lockPath, info)
+		return nil, fmt.Errorf("remove temporary audit lock: %w", err)
+	}
+	return func() error { return removeAuditLockIfSame(lockPath, info) }, nil
+}
+
+func removeAuditLockIfSame(lockPath string, owner os.FileInfo) error {
+	current, err := os.Stat(lockPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(owner, current) {
+		return nil
+	}
+	return os.Remove(lockPath)
+}
+
 // reclaimStaleLock removes a lock left behind by a process that was killed
-// while appending an audit event. Ambiguous or legacy lock contents remain
-// held; only a lock with a verifiable, dead Linux process owner is reclaimed.
+// while appending an audit event. Malformed and live-owner locks remain held;
+// reclaim only a verifiably dead owner or an aged empty lock from an older
+// version that published its path before writing owner metadata.
 func reclaimStaleLock(lockFile string) bool {
 	contents, err := os.ReadFile(lockFile)
 	if err != nil {
 		return false
 	}
 	fields := strings.Fields(string(contents))
+	if len(fields) == 0 {
+		// Older versions could leave a zero-byte lock if they were stopped
+		// after creating the path but before writing owner metadata. New locks
+		// are atomically published with complete contents; only reclaim a
+		// legacy empty lock after a short grace period and an inode/size recheck.
+		info, err := auditStat(lockFile)
+		if err != nil || info.Size() != 0 || time.Since(info.ModTime()) < emptyAuditLockStaleAfter {
+			return false
+		}
+		current, err := os.Stat(lockFile)
+		if err != nil || !os.SameFile(info, current) || current.Size() != 0 {
+			return false
+		}
+		return os.Remove(lockFile) == nil
+	}
 	if len(fields) != 2 && len(fields) != 3 {
 		return false
 	}

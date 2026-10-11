@@ -144,7 +144,7 @@ limited to non-production development installs.
 
 ### Gate 5: Failure Injection Testing (partial; Phase 7 remains open)
 
-**Status:** Partial. The 2026-10-10 KVM run passed installation and the full 107-pass recovery matrix once on a SELinux-enforcing Rocky Linux 9 guest ([results](lab-results/2026-10-10-rocky9-kvm-full-matrix.md)); the 2026-10-09 run additionally passed abrupt guest kills and a real ENOSPC backup ([results](lab-results/2026-10-09-rocky9-kvm-certification.md)). The latest hosted installation smoke run `38076651823` also passed on both AlmaLinux 9 and Rocky Linux 9. Earlier, hosted recovery evidence passed on both disposable distributions for the default drills and the expanded alternate kill-boundary matrix covering cpmove, backup, file restore, termination, account suspension, and Git deploy. A Rocky Linux 9.8 VM passed the same installed-host drills plus abrupt QEMU-process kill/reboot and MariaDB service outage/restart checks; the full Phase 7 failure matrix remains open.
+**Status:** Partial. The 2026-10-10 KVM run passed installation and the full 107-pass recovery matrix once on a SELinux-enforcing Rocky Linux 9 guest ([results](lab-results/2026-10-10-rocky9-kvm-full-matrix.md)); a two-iteration full-matrix attempt on 2026-10-11 completed its first iteration but failed in the second when a worker restart left an empty audit lock ([failure record](lab-results/2026-10-11-rocky9-repeat-matrix-attempt.md)). The zero-byte lock blocked audit-dependent requests. Atomic lock publication and stale-empty-lock recovery now pass unit/race tests; the patched binary also recovered a seeded empty lock in the disposable KVM guest and passed a fresh cpmove import. A successful full repeated-matrix rerun is still required. The 2026-10-09 run additionally passed abrupt guest kills and a real ENOSPC backup ([results](lab-results/2026-10-09-rocky9-kvm-certification.md)). A focused 2026-10-11 KVM test also passed real ext4 ENOSPC during file restore ([results](lab-results/2026-10-11-real-enospc-restore.md)). The latest hosted installation smoke run `38076651823` also passed on both AlmaLinux 9 and Rocky Linux 9. Earlier, hosted recovery evidence passed on both disposable distributions for the default drills and the expanded alternate kill-boundary matrix covering cpmove, backup, file restore, termination, account suspension, and Git deploy. A Rocky Linux 9.8 VM passed the same installed-host drills plus abrupt QEMU-process kill/reboot and MariaDB service outage/restart checks; the full Phase 7 failure matrix remains open.
 
 - ✅ Phase 1: Failure Injection Framework (100%)
 - ✅ Phase 2: Durable Checkpoint System (100%)
@@ -152,7 +152,7 @@ limited to non-production development installs.
 - ✅ Phase 4: Broker Integration (100%)
 - ✅ Phase 5: Operation Journals (100%)
 - ✅ Phase 6: Workflow Integration Testing (100%)
-- 🔄 Phase 7: VM-Level Failure Testing (partial: full recovery matrix on a KVM guest, abrupt guest kill idle and mid-backup, real ENOSPC during backup, MariaDB outage; repetition, ENOSPC beyond backup, and physical power loss remain untested)
+- 🔄 Phase 7: VM-Level Failure Testing (partial: one full KVM matrix run, a failed two-iteration repeat attempt, abrupt guest kill idle and mid-backup, real ENOSPC during backup and file-restore extraction, MariaDB outage; successful repeated matrix runs, ENOSPC during publication/import/database restore, and physical power loss remain unproven)
 
 **What it is:** Prove StePanel survives and recovers deterministically from real failures (SIGKILL, disk full, database offline) at operation boundaries.
 
@@ -240,13 +240,13 @@ recovered every supported journal boundary of cpmove activation, backup,
 restore, termination, and suspension on a SELinux-enforcing Rocky Linux 9
 guest (105 drills), survived an abrupt guest kill while idle and during a
 backup, and showed that a backup hitting real ENOSPC on a dedicated filesystem
-publishes nothing partial. It is a single run, and a QEMU `SIGKILL` is not
-physical power loss.
+publishes nothing partial. A separate focused test later exercised restore
+extraction on a dedicated ext4 filesystem ([results](lab-results/2026-10-11-real-enospc-restore.md)); it does not cover database restore or site publication. These are single runs, and a QEMU `SIGKILL` is not physical power loss.
 
 **Remaining Work:** Complete the Phase 7 failure matrix
 ([REAL_HOST_FAILURE_MATRIX.md](REAL_HOST_FAILURE_MATRIX.md))
 - Repeat the real-host matrix 20–50 times per operation/fault combination
-- Real ENOSPC during site publication, restore, and import (backup is covered)
+- Real ENOSPC during site publication, import, and database restore (backup and file-restore extraction are covered once)
 - Physical power loss / unclean disk-cache loss, beyond killing the QEMU process
 - Managed-database outage during an operation and verified recovery
 - Real-host drills for the `restore:provision` and `restore:provisioned`

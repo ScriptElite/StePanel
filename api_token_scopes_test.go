@@ -146,3 +146,34 @@ func TestLegacyMemberTokenIsBoundByTenantRole(t *testing.T) {
 		t.Fatal("developer legacy token retained a disallowed database scope")
 	}
 }
+
+func TestScopedTokenIsBoundByCurrentMemberRole(t *testing.T) {
+	for _, from := range []string{"manager", "developer"} {
+		t.Run(from+" to viewer", func(t *testing.T) {
+			store := &AccountStore{accounts: map[string]HostingAccount{
+				"alice":    {Username: "alice", TenantID: "alice", Role: "owner", PasswordHash: "hash", TOTPSecret: testTOTPSecret, Plan: "starter"},
+				"alice-mb": {Username: "alice-mb", TenantID: "alice", Role: from, PasswordHash: "hash", TOTPSecret: testTOTPSecret, Plan: "starter"},
+			}}
+			auth := Auth{Username: "admin", Accounts: store}
+			r := httptest.NewRequest("GET", "/api/test", nil)
+			ctx := context.WithValue(r.Context(), apiTokenUsernameKey{}, "alice-mb")
+			ctx = context.WithValue(ctx, apiTokenScopesKey{}, []string{"site:read", "site:deploy"})
+			r = r.WithContext(ctx)
+			if !auth.HasRequiredCustomerScope(r, "site:deploy") {
+				t.Fatalf("%s token lost its issued deployment scope", from)
+			}
+			member := store.accounts["alice-mb"]
+			member.Role = "viewer"
+			store.accounts["alice-mb"] = member
+			if auth.HasRequiredCustomerScope(r, "site:deploy") {
+				t.Fatal("token kept deployment scope after its member was downgraded to viewer")
+			}
+			if auth.HasRequiredCustomerScope(r, "deploy:write") {
+				t.Fatal("token kept the deploy:write alias after downgrade")
+			}
+			if !auth.HasRequiredCustomerScope(r, "site:read") {
+				t.Fatal("viewer token lost a scope the viewer role still allows")
+			}
+		})
+	}
+}

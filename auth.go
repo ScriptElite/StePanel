@@ -715,16 +715,25 @@ func (a Auth) HasRequiredCustomerScope(r *http.Request, scope string) bool {
 		return roleAllowsCustomerScope(accountRole(account), scope)
 	}
 	scopes, _ := r.Context().Value(apiTokenScopesKey{}).([]string)
-	if len(scopes) == 0 {
-		// Legacy credentials remain inside their bounded migration window. The
-		// authentication path applies the expiry deadline; until then retain the
-		// tenant role boundary so a legacy token is not broader than its account.
-		username, _ := r.Context().Value(apiTokenUsernameKey{}).(string)
-		if a.Accounts == nil {
-			return true
-		}
+	username, _ := r.Context().Value(apiTokenUsernameKey{}).(string)
+	if a.Accounts != nil {
+		// A token's scopes were checked against its owner's role only when it
+		// was issued. Re-check the current role and tenant state on every
+		// request so a later downgrade or suspension also bounds the token.
 		account, ok := a.Accounts.Get(username)
-		return ok && roleAllowsCustomerScope(accountRole(account), scope)
+		if ok && (a.Accounts.TenantSuspended(account.Username) || !roleAllowsCustomerScope(accountRole(account), scope)) {
+			return false
+		}
+		if len(scopes) == 0 {
+			// Legacy credentials remain inside their bounded migration window.
+			// The authentication path applies the expiry deadline; until then
+			// the tenant role boundary above keeps a legacy token no broader
+			// than its account.
+			return ok
+		}
+	}
+	if len(scopes) == 0 {
+		return true
 	}
 	for _, candidate := range scopes {
 		if candidate == scope || (scope == "site:deploy" && candidate == "deploy:write") || (scope == "deploy:write" && candidate == "site:deploy") {

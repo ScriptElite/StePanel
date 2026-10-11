@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Security
+
+- Customer API tokens with explicit scopes are now re-checked against the
+  owning member's current role and tenant suspension on every request.
+  Scopes were previously validated only at issuance, so a developer or
+  manager token kept `site:deploy` (or other role-bound scopes) after the
+  member was downgraded to viewer.
+
 ### Added
 
 - Recorded the 2026-10-11 Rocky Linux 9 and AlmaLinux 9 hosted installation

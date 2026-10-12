@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -31,9 +32,86 @@ type SiteTransaction struct {
 	CreatedAt    time.Time         `json:"created_at"`
 	UpdatedAt    time.Time         `json:"updated_at"`
 	Databases    []ManagedDatabase `json:"databases,omitempty"`
+	// Routes are web server routes the transaction publishes. Recovery and
+	// rollback remove them before the site they point at.
+	Routes []TrackedRoute `json:"routes,omitempty"`
 
 	dir    string
 	rename func(string, string) error
+}
+
+// TrackedRoute is a site route recorded before it is applied. Applied is set
+// once the web server accepted it: cleanup must remove an applied route, and
+// removes a pending one on a best-effort basis because a crash may have
+// interrupted it either before or after the web server published it.
+type TrackedRoute struct {
+	Name    string `json:"name"`
+	Applied bool   `json:"applied,omitempty"`
+}
+
+func validTrackedRouteName(site, name string) bool {
+	prefix := "site-" + site + "-"
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	var stem string
+	switch {
+	case strings.HasSuffix(name, ".conf"):
+		stem = strings.TrimSuffix(strings.TrimPrefix(name, prefix), ".conf")
+	case strings.HasSuffix(name, ".caddy"):
+		stem = strings.TrimSuffix(strings.TrimPrefix(name, prefix), ".caddy")
+	default:
+		return false
+	}
+	return stem != "" && strings.Trim(stem, "abcdefghijklmnopqrstuvwxyz0123456789_-") == ""
+}
+
+// TrackRoute records name as a pending route before it is applied.
+func (t *SiteTransaction) TrackRoute(name string) error {
+	if !validTrackedRouteName(t.Site, name) {
+		return errors.New("invalid tracked route name")
+	}
+	for _, existing := range t.Routes {
+		if existing.Name == name {
+			return nil
+		}
+	}
+	t.Routes = append(t.Routes, TrackedRoute{Name: name})
+	if err := t.persist(); err != nil {
+		t.Routes = t.Routes[:len(t.Routes)-1]
+		return err
+	}
+	return nil
+}
+
+// MarkRouteApplied records that the web server published a tracked route.
+func (t *SiteTransaction) MarkRouteApplied(name string) error {
+	for i := range t.Routes {
+		if t.Routes[i].Name == name {
+			t.Routes[i].Applied = true
+			return t.persist()
+		}
+	}
+	return errors.New("route is not tracked by this transaction")
+}
+
+// cleanupRoutes removes the transaction's routes. ctx must carry the site's
+// lease: the root broker rejects unfenced vhost mutations.
+func (t *SiteTransaction) cleanupRoutes(ctx context.Context, cfg Config) error {
+	for len(t.Routes) > 0 {
+		route := t.Routes[0]
+		if err := runVhostMutation(ctx, cfg, "delete", route.Name); err != nil {
+			if route.Applied {
+				return fmt.Errorf("remove route %s: %w", route.Name, err)
+			}
+			log.Printf("remove pending route %s (it may never have been published): %v", route.Name, err)
+		}
+		t.Routes = t.Routes[1:]
+		if err := t.persist(); err != nil {
+			return fmt.Errorf("record route cleanup: %w", err)
+		}
+	}
+	return nil
 }
 
 type ManagedDatabase struct {
@@ -251,7 +329,17 @@ func (t *SiteTransaction) Rollback() error {
 	if err != nil {
 		return fmt.Errorf("invalid recovery site path: %w", err)
 	}
+	if t.State == "committed" || t.State == "rolled-back" {
+		return nil
+	}
 	homeParent, err := os.OpenRoot(filepath.Dir(home))
+	if errors.Is(err, os.ErrNotExist) && !t.HadExisting && t.MailRoot == "" {
+		// The new site was already removed (a creation or recovery proof
+		// was torn down through stepanel-sitectl delete). There is nothing
+		// to preserve and no previous site to restore.
+		t.State = "rolled-back"
+		return t.persist()
+	}
 	if err != nil {
 		return fmt.Errorf("open recovery site parent: %w", err)
 	}
@@ -514,7 +602,7 @@ func recoverTransactionDatabases(cfg Config, root string, lockSite siteLocker, s
 			}
 			continue
 		}
-		if txn.State == "committed" || txn.State == "rolled-back" || len(txn.Databases) == 0 || (site != "" && txn.Site != site) {
+		if txn.State == "committed" || txn.State == "rolled-back" || len(txn.Databases) == 0 && len(txn.Routes) == 0 || (site != "" && txn.Site != site) {
 			continue
 		}
 		siteCtx, unlock, lockErr := lockRecoveredSite(lockSite, txn.Site)
@@ -522,7 +610,11 @@ func recoverTransactionDatabases(cfg Config, root string, lockSite siteLocker, s
 			failures = append(failures, fmt.Errorf("lock transaction %s site: %w", txn.ID, lockErr))
 			continue
 		}
-		err = txn.cleanupDatabases(siteCtx, cfg)
+		// Routes point at the site and its databases; remove them first.
+		err = txn.cleanupRoutes(siteCtx, cfg)
+		if err == nil {
+			err = txn.cleanupDatabases(siteCtx, cfg)
+		}
 		unlock()
 		if err != nil {
 			failures = append(failures, fmt.Errorf("recover transaction %s databases: %w", txn.ID, err))
@@ -578,6 +670,11 @@ func loadSiteTransaction(dir string) (*SiteTransaction, error) {
 	for _, database := range txn.Databases {
 		if err := validateManagedDatabase(database); err != nil {
 			return nil, fmt.Errorf("recovery transaction %s contains an invalid managed database: %w", txn.ID, err)
+		}
+	}
+	for _, route := range txn.Routes {
+		if !validTrackedRouteName(txn.Site, route.Name) {
+			return nil, fmt.Errorf("recovery transaction %s contains an invalid route", txn.ID)
 		}
 	}
 	expectedBackup := filepath.Join(dir, "site-before")

@@ -24,12 +24,15 @@ type Config struct {
 	SiteCtl, VHostCtl, Certbot, DBCtl, RunnerCtl, GitCtl, TaskCtl                            string
 	WPressExtract, WPCLI, AuditLog, JobState, SessionState, AccountState, RecoveryRoot, Sudo string
 	RecoveryProofCommand                                                                     string
-	DBHost, DBUser, DBPassword, DBPasswordFile                                               string
-	DBDataDir                                                                                string
-	DBEngine, DBVersion, DBAdminURL                                                          string
-	GitAllowedHosts, GitWebhookSecret                                                        string
-	RunnerAllowedRegistries, RunnerNetworkMode                                               string
-	RunnerMaxImageBytes                                                                      int64
+	// WordPressRecoveryProof selects when rehearsals run the built-in WordPress
+	// proof: manual (default), always, or off.
+	WordPressRecoveryProof                     string
+	DBHost, DBUser, DBPassword, DBPasswordFile string
+	DBDataDir                                  string
+	DBEngine, DBVersion, DBAdminURL            string
+	GitAllowedHosts, GitWebhookSecret          string
+	RunnerAllowedRegistries, RunnerNetworkMode string
+	RunnerMaxImageBytes                        int64
 	// RunnerAllowedImages, when non-empty, further constrains which
 	// images the build runner will accept beyond the registry allowlist.
 	// Entries are comma-separated `registry/namespace/repo` patterns
@@ -77,6 +80,10 @@ func LoadConfig() Config {
 	c := Config{WebServer: "caddy", Listen: "127.0.0.1:8080", ImportRoot: "data/imports", BackupRoot: "data/backups", WebRoot: "data/www", MailRoot: "data/mail", NVMDir: "data/nvm", ProxyRoot: "data/proxy", VHostRoot: "data/vhosts", AppRoot: "data/apps", MalwareRoot: "data/quarantine", AppCtl: "/usr/local/sbin/stepanel-appctl", ProxyCtl: "/usr/local/sbin/stepanel-proxyctl", VHostCtl: "/usr/local/sbin/stepanel-vhostctl", RunnerCtl: "/usr/local/sbin/stepanel-runnerctl", GitCtl: "/usr/local/sbin/stepanel-gitctl", TaskCtl: "/usr/local/sbin/stepanel-taskctl", Certbot: "/usr/local/sbin/stepanel-certbot", WPressExtract: "/usr/local/bin/wpress-extract", WPCLI: "/usr/local/bin/wp", AuditLog: "data/stepanel-audit.jsonl", JobState: "data/jobs.json", SessionState: "data/sessions.json", AccountState: "data/accounts.json", ControlPlaneDB: "data/stepanel-control.db", RecoveryRoot: "data/www/sites/.stepanel-recovery", GitAllowedHosts: "github.com,gitlab.com,bitbucket.org", RunnerAllowedRegistries: "docker.io,ghcr.io,quay.io", RunnerNetworkMode: "none", RunnerMaxImageBytes: defaultRunnerMaxImageBytes, MaxUpload: 20 << 30, MaxEntries: 1000000, MaxConcurrentJobs: 2, StageRetentionHours: 168, GitReleaseRetention: 3, GitReleaseMaxAgeHours: 168, GitReleaseMaxBytes: 5 << 30, MinFreeBytes: 5 << 30, FTPPassiveMin: 40100, FTPPassiveMax: 40200, RehearsalIntervalHours: 24}
 	c.HSTSIncludeSubdomains, c.HSTSPreload = true, true
 	c.RecoveryProofCommand = os.Getenv("STEPANEL_RECOVERY_PROOF_COMMAND")
+	c.WordPressRecoveryProof = recoveryProofModeManual
+	if v := strings.TrimSpace(os.Getenv("STEPANEL_WORDPRESS_RECOVERY_PROOF")); v != "" {
+		c.WordPressRecoveryProof = strings.ToLower(v)
+	}
 	if v := os.Getenv("STEPANEL_WEBSERVER"); v != "" {
 		c.WebServer = strings.ToLower(strings.TrimSpace(v))
 	}
@@ -314,6 +321,11 @@ func ValidateConfig(c Config) error {
 	var problems []error
 	if c.WorkerMode != "embedded" && c.WorkerMode != "external" {
 		problems = append(problems, errors.New("STEPANEL_WORKER_MODE must be embedded or external"))
+	}
+	switch c.WordPressRecoveryProof {
+	case "", recoveryProofModeManual, recoveryProofModeAlways, recoveryProofModeOff:
+	default:
+		problems = append(problems, errors.New("STEPANEL_WORDPRESS_RECOVERY_PROOF must be manual, always, or off"))
 	}
 	if c.DBEngine != "mysql" && c.DBEngine != "mariadb" && c.DBEngine != "postgresql" {
 		problems = append(problems, errors.New("STEPANEL_DB_ENGINE must be mysql, mariadb, or postgresql"))

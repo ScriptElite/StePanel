@@ -76,6 +76,7 @@ and never affects the operation; failures are logged.
 | Webhook configuration update | A, intent-first | `webhook.config.updated` |
 | Webhook disable | A, revocation | `webhook.config.disabled` |
 | Site creation | A, intent-first | `site.created` |
+| WordPress recovery proof (throwaway site, database, and route created and removed during a rehearsal) | A, intent-first | `recovery.proof.site` |
 | Site route publication and removal | A, intent-first | `site.deployed`, `site.deleted` |
 | Site termination | A, journaled sequence | `site.termination.initiated`, `site.terminated` |
 | App, Python and proxy deployments, proxy removal | A, intent-first | `app.deployed`, `python.deployed`, `proxy.deployed`, `proxy.deleted` |

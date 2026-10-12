@@ -99,12 +99,45 @@ For recovery confidence without changing customer state, use the backup
 `Rehearse restore` action (or `POST /api/backups/rehearse`). The durable job
 verifies the signed archive, extracts it into a temporary isolated directory,
 checks the site tree and every recorded database dump, reports counts and
-bytes, and removes the temporary directory. Configure
-`STEPANEL_RECOVERY_PROOF_COMMAND` to extend this into the production proof:
-the command receives the site name and temporary stage path and owns database
-restore, configuration generation, service activation, and an HTTP health
-probe. Its successful exit is required before the rehearsal is recorded at
-the `application` level.
+bytes, and removes the temporary directory.
+
+**WordPress application proof (built in).** For a WordPress backup, the
+rehearsal then restores it into a throwaway site through the production
+lifecycle path and records the `application` level only if the restored site
+serves real requests:
+
+1. a site named `stepanel-proof-<id>` is created with its own Unix account and
+   PHP-FPM pool, and the backed-up files are published into it;
+2. `stepanel-dbctl restore-wordpress` creates a fresh database and user and
+   imports the backed-up database as that user;
+3. `wp-config.php` is rewritten to those credentials, `DB_HOST` `localhost`,
+   and `WP_HOME`/`WP_SITEURL` `<id>.localhost` (Caddy: `https://`, Apache and
+   OpenLiteSpeed: `http://`), so the proof never answers for a customer domain;
+4. the web server publishes a route for that private hostname, and loopback
+   requests to `/` and `/wp-login.php` must return WordPress output. A
+   database connection error, the WordPress installer (missing tables), or a
+   redirect to any other host fails the proof.
+
+The proof site, database, and route are always removed afterwards. They are
+tracked in an uncommitted site transaction, so if the worker dies mid-proof,
+startup recovery removes them. The `stepanel-proof-` site name prefix is
+reserved for this purpose. The proof is recorded in the security ledger as
+`recovery.proof.site`.
+
+Backups the proof cannot exercise stay at archive level, and the rehearsal
+result's `application_proof_skipped` field gives the reason: no
+`wp-config.php` or WordPress core, a `DB_NAME` database missing from the
+backup, credentials computed at runtime (for example with PHP `getenv`), or a
+PostgreSQL host. `STEPANEL_WORDPRESS_RECOVERY_PROOF` controls when the proof
+runs: `manual` (default) for operator-requested rehearsals, `always` to also
+prove every automatic post-backup rehearsal (each proof briefly adds and
+removes a route and reloads the web server), or `off`.
+
+For other applications, configure `STEPANEL_RECOVERY_PROOF_COMMAND`; it takes
+precedence over the built-in proof. The command receives the site name and
+temporary stage path and owns database restore, configuration generation,
+service activation, and an HTTP health probe. Its successful exit is required
+before the rehearsal is recorded at the `application` level.
 
 Every rehearsal, passed or failed, is recorded with its timing, and each
 site's **Recovery status** (Backups tab, or `GET /api/sites/recovery/{site}`)
@@ -116,8 +149,8 @@ summarizes the evidence:
   passed), `unverified` (never rehearsed), or `no_backup`.
 - **Measured recovery time**: how long the last passing rehearsal took. An
   archive-level result measures verification, decryption, and extraction;
-  an application-level result also includes the configured restore, service,
-  and HTTP proof command.
+  an application-level result also includes the restore, service, and HTTP
+  proof.
 - **Recovery point**: the age of the newest backup, which is how much recent
   change a restore would lose.
 - **Encryption key**: `proven` once a rehearsal has decrypted an encrypted

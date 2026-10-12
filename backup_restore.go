@@ -48,6 +48,11 @@ type backupRehearsalResult struct {
 	CompletedAt      time.Time        `json:"completed_at"`
 	DurationMS       int64            `json:"duration_ms"`
 	Phases           []recovery.Phase `json:"phases,omitempty"`
+	// ApplicationProof is the built-in WordPress proof, when it ran.
+	ApplicationProof *wordpressProofResult `json:"application_proof,omitempty"`
+	// ApplicationProofSkipped explains why the rehearsal stayed at archive
+	// level when no application proof ran.
+	ApplicationProofSkipped string `json:"application_proof_skipped,omitempty"`
 }
 
 func (a *App) enqueueBackupRestoreJob(request durableBackupRestoreRequest, operationKey string) (Job, error) {
@@ -326,6 +331,21 @@ func (a *App) rehearseBackupArchive(operationCtx context.Context, request durabl
 		}
 		run.end("application-proof")
 		run.record.Level = recovery.LevelApplication
+	} else if wordpressProofEnabled(a.Config, request.Scheduled) {
+		run.begin()
+		proof, proofErr := a.proveWordPressRestore(operationCtx, stage, manifest.Databases)
+		switch {
+		case errors.Is(proofErr, errRecoveryProofUnsupported):
+			result.ApplicationProofSkipped = proofErr.Error()
+		case proofErr != nil:
+			return backupRehearsalResult{}, fmt.Errorf("WordPress application recovery proof failed: %w", proofErr)
+		default:
+			run.end("application-proof")
+			run.record.Level = recovery.LevelApplication
+			result.ApplicationProof = &proof
+		}
+	} else {
+		result.ApplicationProofSkipped = "no application proof is configured for this rehearsal"
 	}
 	run.record.FilesRestored = result.FilesExtracted
 	run.record.BytesRestored = result.BytesExtracted

@@ -27,6 +27,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
+- Built-in WordPress application recovery proof. Rehearsing a WordPress
+  backup restores it into a throwaway `stepanel-proof-<id>` site through the
+  production lifecycle path (site account and PHP-FPM pool, database import
+  as a fresh user, rewritten `wp-config.php`, a web server route on a private
+  `*.localhost` hostname) and records the `application` level only when
+  loopback requests to `/` and `/wp-login.php` return WordPress output. The
+  site, database, and route are always removed, and startup recovery removes
+  them after a crash. `STEPANEL_WORDPRESS_RECOVERY_PROOF` selects `manual`
+  (default), `always`, or `off`; the `stepanel-proof-` site prefix is now
+  reserved. Site transactions now track web server routes, and rolling back
+  a new site that was already removed no longer fails.
 - Recorded the 2026-10-11 Rocky Linux 9 and AlmaLinux 9 hosted installation
   smoke results, including the default recovery matrix and explicit limits of
   the container-based evidence; linked the run in the authoritative production

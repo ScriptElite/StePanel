@@ -881,7 +881,7 @@ func userFromArchiveName(name string) string {
 		if i := strings.Index(candidate, "."); i > 0 {
 			candidate = candidate[:i]
 		}
-		if safeUser(candidate) != "" {
+		if safeUser(candidate) != "" && !isRecoveryProofSiteName(candidate) {
 			return candidate
 		}
 	}
@@ -892,7 +892,7 @@ func userFromArchiveName(name string) string {
 		} else {
 			return ""
 		}
-		if safeUser(candidate) != "" {
+		if safeUser(candidate) != "" && !isRecoveryProofSiteName(candidate) {
 			return candidate
 		}
 	}

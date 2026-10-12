@@ -61,7 +61,7 @@ func (a *App) stagingCreate(w http.ResponseWriter, r *http.Request) {
 	input.Source = safeUser(input.Source)
 	input.Site = safeUser(input.Site)
 	input.Domain = strings.ToLower(strings.TrimSpace(input.Domain))
-	if input.Source == "" || input.Site == "" || input.Source == input.Site || !domainname.Valid(input.Domain) {
+	if input.Source == "" || input.Site == "" || input.Source == input.Site || isRecoveryProofSiteName(input.Site) || !domainname.Valid(input.Domain) {
 		http.Error(w, "invalid staging source, site, or domain", 422)
 		return
 	}

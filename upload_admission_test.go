@@ -3,6 +3,7 @@ package stepanel
 import (
 	"bufio"
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -310,6 +311,47 @@ func TestCapacityLedgerMigratesAndReclaimsLegacyReservationRows(t *testing.T) {
 	var ownerColumns int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('capacity_reservations') WHERE name IN ('owner_pid','owner_start')`).Scan(&ownerColumns); err != nil || ownerColumns != 2 {
 		t.Fatalf("capacity owner columns = %d, err=%v; want 2", ownerColumns, err)
+	}
+}
+
+func TestCapacityLedgerOwnerColumnMigrationCanRaceAcrossServices(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "control.db")
+	firstDB, err := openControlPlaneDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer firstDB.Close()
+	secondDB, err := openControlPlaneDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondDB.Close()
+	if _, err := firstDB.Exec(`DROP TABLE capacity_reservations;
+		CREATE TABLE capacity_reservations (
+			reservation_id TEXT NOT NULL,
+			device INTEGER NOT NULL,
+			bytes INTEGER NOT NULL,
+			workflow TEXT NOT NULL,
+			staging_path TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (reservation_id, device)
+		);`); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for _, db := range []*sql.DB{firstDB, secondDB} {
+		go func(db *sql.DB) {
+			<-start
+			_, err := newCapacityLedger(db)
+			errs <- err
+		}(db)
+	}
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent capacity ledger migration failed: %v", err)
+		}
 	}
 }
 

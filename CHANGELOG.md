@@ -52,7 +52,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Cross-process capacity reservations now record the owning Linux process's
   boot ID and start time. Startup reclaims reservations only when that exact
   process is confirmed gone, preventing a killed workflow from reserving disk
-  space indefinitely without expiring live work.
+  space indefinitely without expiring live work. The schema upgrade also
+  tolerates simultaneous panel/worker startup.
 - Fixed two root-broker vhost validation mismatches that broke production
   route operations: route deletion accepted only `*.conf` names, so every
   route removal on Caddy hosts (whose helper writes `*.caddy`) was rejected;

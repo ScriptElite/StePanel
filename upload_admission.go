@@ -213,7 +213,14 @@ func ensureCapacityReservationOwnerColumns(db *sql.DB) error {
 	} {
 		if !columns[column.name] {
 			if _, err := db.Exec(column.ddl); err != nil {
-				return fmt.Errorf("add capacity reservation %s column: %w", column.name, err)
+				// The panel and worker may start together on an older database.
+				// Another process can win the same ALTER after both inspected the
+				// schema; accept that exact race, but never hide an unrelated error.
+				var exists bool
+				checkErr := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pragma_table_info('capacity_reservations') WHERE name=?)`, column.name).Scan(&exists)
+				if checkErr != nil || !exists {
+					return fmt.Errorf("add capacity reservation %s column: %w", column.name, errors.Join(err, checkErr))
+				}
 			}
 		}
 	}

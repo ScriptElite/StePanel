@@ -281,6 +281,20 @@ func TestCapacityLedgerReclaimsOnlyReservationsFromDeadProcesses(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM capacity_reservations`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("orphan reservation count = %d, err=%v; want 0", count, err)
 	}
+	reusedPID, err := first.reserve(cfg, "reused-pid", cfg.ImportRoot, []capacityDemand{{Path: cfg.ImportRoot, Bytes: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reusedPID.release()
+	if _, err := db.Exec(`UPDATE capacity_reservations SET owner_start='previous-boot:same-pid' WHERE reservation_id=?`, reusedPID.id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newCapacityLedger(db); err != nil {
+		t.Fatalf("ledger failed to reclaim reused-PID reservation: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM capacity_reservations WHERE reservation_id=?`, reusedPID.id).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("reused-PID reservation count = %d, err=%v; want 0", count, err)
+	}
 }
 
 func TestCapacityLedgerMigratesAndReclaimsLegacyReservationRows(t *testing.T) {

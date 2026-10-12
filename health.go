@@ -68,6 +68,27 @@ func (a *App) readyz(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) operationalHealth(w http.ResponseWriter, r *http.Request) {
 	checks := operationalChecks(a.Config, a.Jobs)
+	var notificationStatus operatorNotificationStatus
+	if a.Notifications != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+		status, err := a.Notifications.status(ctx, a.Config)
+		cancel()
+		if err != nil {
+			checks["operator_notifications"] = ReadinessCheck{Ready: false, Detail: "notification outbox is unavailable"}
+		} else {
+			notificationStatus = status
+			switch {
+			case !status.Configured:
+				checks["operator_notifications"] = ReadinessCheck{Ready: false, Detail: "no SMTP or webhook alert destination is configured"}
+			case status.FailedDeliveries > 0:
+				checks["operator_notifications"] = ReadinessCheck{Ready: false, Detail: fmt.Sprintf("%d alert delivery failure(s) require attention", status.FailedDeliveries)}
+			case status.Pending > 0:
+				checks["operator_notifications"] = ReadinessCheck{Ready: false, Detail: fmt.Sprintf("%d alert(s) await delivery", status.Pending)}
+			default:
+				checks["operator_notifications"] = ReadinessCheck{Ready: true}
+			}
+		}
+	}
 	var offsiteCapability Capability
 	if a.Config.OffsiteTarget != "" {
 		offsiteCapability = a.checkOffsiteBackupCapability()
@@ -96,6 +117,9 @@ func (a *App) operationalHealth(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusServiceUnavailable
 	}
 	response := map[string]any{"ok": operational, "operational": operational, "checks": checks, "time": time.Now().UTC()}
+	if a.Notifications != nil {
+		response["operator_notifications"] = notificationStatus
+	}
 	if a.Jobs != nil && a.Jobs.db != nil {
 		checkedAt, integrityErr, checked := a.Jobs.IntegrityStatus()
 		verification := map[string]any{"checked": checked}

@@ -298,6 +298,46 @@ CREATE INDEX IF NOT EXISTS jobs_owner_state_idx ON jobs(owner, state, started_at
         );`)
 		return err
 	}),
+	migration.NewMigration(14, "add durable operator alert outbox", func(tx *sql.Tx) error {
+		_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS operator_notification_events (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            job_kind TEXT NOT NULL,
+            owner TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('failed', 'dead-letter')),
+            created_at INTEGER NOT NULL,
+            webhook_delivered_at INTEGER,
+            email_delivered_at INTEGER,
+            webhook_attempts INTEGER NOT NULL DEFAULT 0,
+            email_attempts INTEGER NOT NULL DEFAULT 0,
+            webhook_next_attempt_at INTEGER NOT NULL,
+            email_next_attempt_at INTEGER NOT NULL,
+            last_webhook_error TEXT NOT NULL DEFAULT '',
+            last_email_error TEXT NOT NULL DEFAULT '',
+            last_webhook_failed_at INTEGER,
+            last_email_failed_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS operator_notification_pending_idx
+            ON operator_notification_events(webhook_next_attempt_at, email_next_attempt_at, created_at)
+            WHERE webhook_delivered_at IS NULL OR email_delivered_at IS NULL;
+        CREATE TRIGGER IF NOT EXISTS jobs_alert_on_terminal_insert
+        AFTER INSERT ON jobs WHEN NEW.state IN ('failed', 'dead-letter')
+        BEGIN
+            INSERT INTO operator_notification_events(id, job_id, job_kind, owner, state, created_at, webhook_next_attempt_at, email_next_attempt_at)
+            VALUES(lower(hex(randomblob(16))), NEW.id, NEW.kind, NEW.owner, NEW.state, unixepoch(), unixepoch(), unixepoch());
+        END;
+        CREATE TRIGGER IF NOT EXISTS jobs_alert_on_terminal_transition
+        AFTER UPDATE OF state ON jobs
+        WHEN NEW.state IN ('failed', 'dead-letter') AND OLD.state <> NEW.state
+        BEGIN
+            INSERT INTO operator_notification_events(id, job_id, job_kind, owner, state, created_at, webhook_next_attempt_at, email_next_attempt_at)
+            VALUES(lower(hex(randomblob(16))), NEW.id, NEW.kind, NEW.owner, NEW.state, unixepoch(), unixepoch(), unixepoch());
+        END;
+        INSERT INTO operator_notification_events(id, job_id, job_kind, owner, state, created_at, webhook_next_attempt_at, email_next_attempt_at)
+        SELECT lower(hex(randomblob(16))), id, kind, owner, state, unixepoch(), unixepoch(), unixepoch()
+        FROM jobs WHERE state IN ('failed', 'dead-letter');`)
+		return err
+	}),
 }
 
 func controlPlaneColumnExists(tx *sql.Tx, table, column string) (bool, error) {

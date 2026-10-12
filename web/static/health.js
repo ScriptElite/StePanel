@@ -66,6 +66,8 @@
         }
         const offsite = checks.offsite_backup;
         tones.push(add('Offsite', offsite ? offsite.ready : 'Not configured', offsite ? offsite.detail : 'No required offsite target configured'));
+        const notifications = checks.operator_notifications;
+        tones.push(add('Operator alerts', notifications ? notifications.ready : 'Unavailable', notifications ? notifications.detail : 'Alert delivery status is unavailable'));
         const mail = serviceState(services, ['dovecot', 'exim', 'exim4', 'postfix']);
         tones.push(add('Mail', mail || 'Not configured', mail ? 'Mail service probe' : 'No mail service detected'));
       }

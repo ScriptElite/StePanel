@@ -208,6 +208,41 @@ Dead-letter jobs intentionally keep readiness failed until reviewed. After
 remediating the underlying fault, an administrator can requeue one with
 `POST /api/jobs/<job-id>/retry`; the action resets its attempt counter, is
 durably compare-and-set against the dead-letter state, and is audit logged.
+
+### Operator notifications
+
+Failed and dead-letter job transitions are recorded in a durable SQLite
+outbox. Configure at least one destination in `/etc/ste-panel.env` and restart
+the panel:
+
+```sh
+STEPANEL_ALERT_WEBHOOK_URL=https://alerts.example.net/stepanel
+STEPANEL_ALERT_WEBHOOK_SECRET="replace-with-at-least-32-random-characters"
+# or use SMTP (STARTTLS is mandatory; implicit-TLS SMTP is not currently supported)
+STEPANEL_ALERT_EMAIL_TO=oncall@example.net
+STEPANEL_ALERT_EMAIL_FROM=stepanel@example.net
+STEPANEL_ALERT_SMTP_HOST=smtp.example.net
+STEPANEL_ALERT_SMTP_PORT=587
+STEPANEL_ALERT_SMTP_USER="optional-service-account"
+STEPANEL_ALERT_SMTP_PASSWORD="optional-service-password"
+```
+
+Webhook receivers get a JSON event with `X-StePanel-Event-ID` and an
+`X-StePanel-Signature: sha256=<hex>` HMAC-SHA256 header over the exact body;
+use the configured secret and constant-time comparison when validating it.
+Events are delivered at least once, so receivers should deduplicate by event
+ID. Retries use bounded exponential backoff. SMTP and webhook channels track
+delivery independently. Error details and job payloads are deliberately not
+sent; delivery status and redacted failure categories appear in the
+admin-only `/api/health/operational` endpoint and Health view. Alert delivery
+degradation is not allowed to stop the panel or customer sites, but it makes
+operational health fail until delivery recovers or the outbox is resolved.
+
+Webhook destinations must pass the outbound public-address policy. Do not put
+credentials in the webhook URL; use the HMAC secret. Treat the SMTP password
+and webhook secret as production credentials and keep the environment file
+root-readable only.
+
 Pending resource enforcement shows in each site's resource profile
 (`GET /api/sites/resources/{site}`, any `state` other than `applied`);
 `POST /api/reconcile/resources` re-applies pending profiles and reports the

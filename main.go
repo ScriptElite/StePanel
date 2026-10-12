@@ -61,6 +61,7 @@ type App struct {
 	Deployments              *DeploymentStore
 	Resources                *ResourceStore
 	Webhooks                 *WebhookConfigStore
+	Notifications            *operatorNotificationStore
 	BackupIndex              *metadata.BackupIndex
 	Recovery                 *recovery.Store
 	ResourceBudget           *ResourceBudget
@@ -358,6 +359,10 @@ func Main() {
 		log.Fatalf("initialize audit outbox: %v", err)
 	}
 	defaultAuditOutbox = auditOutbox
+	notifications, err := newOperatorNotificationStore(controlPlaneDB)
+	if err != nil {
+		log.Fatalf("initialize operator notification outbox: %v", err)
+	}
 	siteManager, err := siteauthority.NewDefaultManager(cfg.WebRoot)
 	if err != nil {
 		log.Fatalf("initialize site lifecycle manager: %v", err)
@@ -536,7 +541,7 @@ func Main() {
 	if err != nil {
 		log.Fatalf("initialize capacity ledger: %v", err)
 	}
-	app := &App{Config: cfg, View: view, AssetVersion: assetVersion, Auth: auth, Jobs: jobs, Metrics: NewMetrics(), Schedules: schedules, Accounts: accounts, Environments: environments, Redis: redisAllocations, DNSDesired: dnsDesired, Routes: routes, Domains: domains, Access: access, Workers: workers, Composer: composer, PHP: phpProfiles, Tasks: tasks, APITokens: auth.apiTokens, Deployments: deployments, Resources: resources, Webhooks: webhookConfigStore, BackupIndex: backupIndex, Recovery: recoveryStore, webhookReplayCache: NewDurableWebhookReplayCache(controlPlaneDB, 5*time.Minute), dbLocks: dbLocks, siteManager: siteManager, capacity: capacityLedger{db: capacity.db}}
+	app := &App{Config: cfg, View: view, AssetVersion: assetVersion, Auth: auth, Jobs: jobs, Metrics: NewMetrics(), Schedules: schedules, Accounts: accounts, Environments: environments, Redis: redisAllocations, DNSDesired: dnsDesired, Routes: routes, Domains: domains, Access: access, Workers: workers, Composer: composer, PHP: phpProfiles, Tasks: tasks, APITokens: auth.apiTokens, Deployments: deployments, Resources: resources, Webhooks: webhookConfigStore, Notifications: notifications, BackupIndex: backupIndex, Recovery: recoveryStore, webhookReplayCache: NewDurableWebhookReplayCache(controlPlaneDB, 5*time.Minute), dbLocks: dbLocks, siteManager: siteManager, capacity: capacityLedger{db: capacity.db}}
 	app.startup.begin()
 	// Categorized state errors feed stepanel_state_errors_total and the logs.
 	jobs.SetStateErrorObserver(app.observeStateError)
@@ -642,6 +647,7 @@ func Main() {
 			}
 		}()
 	}
+	go app.runOperatorNotificationLoop(runCtx)
 	go func() {
 		scheduleTicker := time.NewTicker(time.Minute)
 		cleanupTicker := time.NewTicker(15 * time.Minute)

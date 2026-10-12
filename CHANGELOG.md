@@ -33,6 +33,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
+- Durable operator alerts for failed and dead-letter jobs via signed HTTPS
+  webhooks and STARTTLS-only SMTP. Alert events are written transactionally
+  with job state, retried independently per channel, redacted in delivery
+  diagnostics, and surfaced in operational health. Configure with the
+  `STEPANEL_ALERT_*` variables documented in `docs/OPERATIONS.md`.
 - Built-in WordPress application recovery proof. Rehearsing a WordPress
   backup restores it into a throwaway `stepanel-proof-<id>` site through the
   production lifecycle path (site account and PHP-FPM pool, database import

@@ -46,14 +46,17 @@ type Config struct {
 	BackupEncryptionKey              string
 	// BackupPreviousEncryptionKeys are retired keys that still decrypt
 	// older backups; new backups always use BackupEncryptionKey.
-	BackupPreviousEncryptionKeys []string
-	RedisState                   string
-	OffsiteTarget                string
-	CloudProvider                string
-	RequireOffsiteBackup         bool
-	TLSAlreadyTerminated         bool
-	HSTSIncludeSubdomains        bool
-	HSTSPreload                  bool
+	BackupPreviousEncryptionKeys                                                  []string
+	RedisState                                                                    string
+	OffsiteTarget                                                                 string
+	CloudProvider                                                                 string
+	RequireOffsiteBackup                                                          bool
+	AlertWebhookURL, AlertWebhookSecret                                           string
+	AlertEmailTo, AlertEmailFrom, AlertSMTPHost, AlertSMTPUser, AlertSMTPPassword string
+	AlertSMTPPort                                                                 int
+	TLSAlreadyTerminated                                                          bool
+	HSTSIncludeSubdomains                                                         bool
+	HSTSPreload                                                                   bool
 	// TrustedProxyCIDRs is a comma-separated list of CIDRs (for example
 	// "127.0.0.1/32,::1/128,10.0.20.0/24") from which forwarded-identity
 	// headers are trusted. Any other peer is treated as a direct client
@@ -77,7 +80,7 @@ type Config struct {
 }
 
 func LoadConfig() Config {
-	c := Config{WebServer: "caddy", Listen: "127.0.0.1:8080", ImportRoot: "data/imports", BackupRoot: "data/backups", WebRoot: "data/www", MailRoot: "data/mail", NVMDir: "data/nvm", ProxyRoot: "data/proxy", VHostRoot: "data/vhosts", AppRoot: "data/apps", MalwareRoot: "data/quarantine", AppCtl: "/usr/local/sbin/stepanel-appctl", ProxyCtl: "/usr/local/sbin/stepanel-proxyctl", VHostCtl: "/usr/local/sbin/stepanel-vhostctl", RunnerCtl: "/usr/local/sbin/stepanel-runnerctl", GitCtl: "/usr/local/sbin/stepanel-gitctl", TaskCtl: "/usr/local/sbin/stepanel-taskctl", Certbot: "/usr/local/sbin/stepanel-certbot", WPressExtract: "/usr/local/bin/wpress-extract", WPCLI: "/usr/local/bin/wp", AuditLog: "data/stepanel-audit.jsonl", JobState: "data/jobs.json", SessionState: "data/sessions.json", AccountState: "data/accounts.json", ControlPlaneDB: "data/stepanel-control.db", RecoveryRoot: "data/www/sites/.stepanel-recovery", GitAllowedHosts: "github.com,gitlab.com,bitbucket.org", RunnerAllowedRegistries: "docker.io,ghcr.io,quay.io", RunnerNetworkMode: "none", RunnerMaxImageBytes: defaultRunnerMaxImageBytes, MaxUpload: 20 << 30, MaxEntries: 1000000, MaxConcurrentJobs: 2, StageRetentionHours: 168, GitReleaseRetention: 3, GitReleaseMaxAgeHours: 168, GitReleaseMaxBytes: 5 << 30, MinFreeBytes: 5 << 30, FTPPassiveMin: 40100, FTPPassiveMax: 40200, RehearsalIntervalHours: 24}
+	c := Config{WebServer: "caddy", Listen: "127.0.0.1:8080", ImportRoot: "data/imports", BackupRoot: "data/backups", WebRoot: "data/www", MailRoot: "data/mail", NVMDir: "data/nvm", ProxyRoot: "data/proxy", VHostRoot: "data/vhosts", AppRoot: "data/apps", MalwareRoot: "data/quarantine", AppCtl: "/usr/local/sbin/stepanel-appctl", ProxyCtl: "/usr/local/sbin/stepanel-proxyctl", VHostCtl: "/usr/local/sbin/stepanel-vhostctl", RunnerCtl: "/usr/local/sbin/stepanel-runnerctl", GitCtl: "/usr/local/sbin/stepanel-gitctl", TaskCtl: "/usr/local/sbin/stepanel-taskctl", Certbot: "/usr/local/sbin/stepanel-certbot", WPressExtract: "/usr/local/bin/wpress-extract", WPCLI: "/usr/local/bin/wp", AuditLog: "data/stepanel-audit.jsonl", JobState: "data/jobs.json", SessionState: "data/sessions.json", AccountState: "data/accounts.json", ControlPlaneDB: "data/stepanel-control.db", RecoveryRoot: "data/www/sites/.stepanel-recovery", GitAllowedHosts: "github.com,gitlab.com,bitbucket.org", RunnerAllowedRegistries: "docker.io,ghcr.io,quay.io", RunnerNetworkMode: "none", RunnerMaxImageBytes: defaultRunnerMaxImageBytes, MaxUpload: 20 << 30, MaxEntries: 1000000, MaxConcurrentJobs: 2, StageRetentionHours: 168, GitReleaseRetention: 3, GitReleaseMaxAgeHours: 168, GitReleaseMaxBytes: 5 << 30, MinFreeBytes: 5 << 30, FTPPassiveMin: 40100, FTPPassiveMax: 40200, RehearsalIntervalHours: 24, AlertSMTPPort: 587}
 	c.HSTSIncludeSubdomains, c.HSTSPreload = true, true
 	c.RecoveryProofCommand = os.Getenv("STEPANEL_RECOVERY_PROOF_COMMAND")
 	c.WordPressRecoveryProof = recoveryProofModeManual
@@ -256,6 +259,20 @@ func LoadConfig() Config {
 	}
 	c.OffsiteTarget = strings.TrimSpace(os.Getenv("STEPANEL_OFFSITE_TARGET"))
 	c.CloudProvider = strings.ToLower(strings.TrimSpace(os.Getenv("STEPANEL_CLOUD_PROVIDER")))
+	c.AlertWebhookURL = strings.TrimSpace(os.Getenv("STEPANEL_ALERT_WEBHOOK_URL"))
+	c.AlertWebhookSecret = os.Getenv("STEPANEL_ALERT_WEBHOOK_SECRET")
+	c.AlertEmailTo = strings.TrimSpace(os.Getenv("STEPANEL_ALERT_EMAIL_TO"))
+	c.AlertEmailFrom = strings.TrimSpace(os.Getenv("STEPANEL_ALERT_EMAIL_FROM"))
+	c.AlertSMTPHost = strings.TrimSpace(os.Getenv("STEPANEL_ALERT_SMTP_HOST"))
+	c.AlertSMTPUser = os.Getenv("STEPANEL_ALERT_SMTP_USER")
+	c.AlertSMTPPassword = os.Getenv("STEPANEL_ALERT_SMTP_PASSWORD")
+	if raw := strings.TrimSpace(os.Getenv("STEPANEL_ALERT_SMTP_PORT")); raw != "" {
+		if port, err := strconv.Atoi(raw); err == nil {
+			c.AlertSMTPPort = port
+		} else {
+			c.AlertSMTPPort = -1
+		}
+	}
 	if v := strings.TrimSpace(os.Getenv("STEPANEL_REQUIRE_OFFSITE_BACKUP")); v == "1" {
 		c.RequireOffsiteBackup = true
 	}
@@ -319,6 +336,9 @@ func ValidateConfig(c Config) error {
 		return fmt.Errorf("STEPANEL_WEBSERVER must be apache, openlitespeed, or caddy")
 	}
 	var problems []error
+	if err := validateOperatorAlertConfig(c); err != nil {
+		problems = append(problems, err)
+	}
 	if c.WorkerMode != "embedded" && c.WorkerMode != "external" {
 		problems = append(problems, errors.New("STEPANEL_WORKER_MODE must be embedded or external"))
 	}

@@ -34,6 +34,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- Fixed two root-broker vhost validation mismatches that broke production
+  route operations: route deletion accepted only `*.conf` names, so every
+  route removal on Caddy hosts (whose helper writes `*.caddy`) was rejected;
+  and the broker accepted the web server name `ols` while the panel sends
+  `openlitespeed`, so OpenLiteSpeed hosts' vhost and proxy requests were
+  rejected. Deletion now requires the extension of the configured web server.
 - Persist the quota-smoke ENOSPC volume in the disposable guest's `/etc/fstab`
   so it is remounted after the workflow's abrupt-reboot drill; the previous
   workflow reached recovery successfully but then failed its ENOSPC phase

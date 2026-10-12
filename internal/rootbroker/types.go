@@ -284,7 +284,7 @@ type VhostRequest struct {
 	Name          string `json:"name,omitempty"` // Managed config name for delete
 	SSLCertPath   string `json:"ssl_cert_path,omitempty"`
 	SSLKeyPath    string `json:"ssl_key_path,omitempty"`
-	WebServer     string `json:"webserver"` // caddy, apache, nginx, ols
+	WebServer     string `json:"webserver"` // caddy, apache, nginx, openlitespeed (or legacy ols)
 	BasicAuthUser string `json:"basic_auth_user,omitempty"`
 	BasicAuthHash string `json:"basic_auth_hash,omitempty"` // bcrypt hash
 	UpstreamPort  int    `json:"upstream_port,omitempty"`
@@ -305,7 +305,7 @@ type ProxyRequest struct {
 	Domain    string            `json:"domain,omitempty"`
 	Backend   string            `json:"backend,omitempty"`
 	Name      string            `json:"name,omitempty"`
-	WebServer string            `json:"webserver"`           // caddy, apache, nginx, ols
+	WebServer string            `json:"webserver"`           // caddy, apache, nginx, openlitespeed (or legacy ols)
 	Upstreams map[string]string `json:"upstreams,omitempty"` // domain -> upstream address
 	CertPath  string            `json:"cert_path,omitempty"`
 	KeyPath   string            `json:"key_path,omitempty"`

@@ -48,3 +48,25 @@ func TestTypedRequestFixedCommandArgumentsRejectInvalidInputs(t *testing.T) {
 		}
 	}
 }
+
+// Route deletion must accept the extension the configured web server's
+// helper writes: Caddy routes are *.caddy, Apache and OpenLiteSpeed *.conf.
+func TestVhostDeleteRouteNameMatchesWebServer(t *testing.T) {
+	v := NewValidator("/var/www")
+	for _, test := range []struct {
+		server, name string
+		ok           bool
+	}{
+		{"caddy", "site-shop-shop_example_com.caddy", true},
+		{"caddy", "site-shop-shop_example_com.conf", false},
+		{"apache", "site-shop-shop_example_com.conf", true},
+		{"apache", "site-shop-shop_example_com.caddy", false},
+		{"openlitespeed", "site-shop-shop_example_com.conf", true},
+		{"caddy", "site-shop-../x.caddy", false},
+	} {
+		err := v.validateVhostRequest(&VhostRequest{Action: "delete", WebServer: test.server, Name: test.name})
+		if (err == nil) != test.ok {
+			t.Errorf("%s delete %q: err = %v, want ok=%v", test.server, test.name, err, test.ok)
+		}
+	}
+}

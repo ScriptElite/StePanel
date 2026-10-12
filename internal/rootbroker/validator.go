@@ -282,11 +282,14 @@ func (v *Validator) ValidateNodeVersion(version string) error {
 
 // ValidateWebServer validates a webserver type.
 func (v *Validator) ValidateWebServer(ws string) error {
+	// The panel configuration names OpenLiteSpeed "openlitespeed"
+	// (STEPANEL_WEBSERVER); "ols" is kept for older clients.
 	allowed := map[string]bool{
-		"caddy":  true,
-		"apache": true,
-		"nginx":  true,
-		"ols":    true,
+		"caddy":         true,
+		"apache":        true,
+		"nginx":         true,
+		"ols":           true,
+		"openlitespeed": true,
 	}
 	if !allowed[ws] {
 		return fmt.Errorf("unsupported webserver: %s", ws)
@@ -703,7 +706,13 @@ func (v *Validator) validateVhostRequest(req *VhostRequest) error {
 		return err
 	}
 	if req.Action == "delete" {
-		if !schemaRouteNamePattern.MatchString(req.Name) {
+		// Caddy routes are *.caddy files; Apache and OpenLiteSpeed use
+		// *.conf. Each helper accepts only its own extension.
+		extension := ".conf"
+		if req.WebServer == "caddy" {
+			extension = ".caddy"
+		}
+		if !schemaRouteNamePattern.MatchString(req.Name) || !strings.HasSuffix(req.Name, extension) {
 			return errors.New("invalid site route name")
 		}
 		return nil

@@ -895,6 +895,9 @@ func TestRunnerWorksUnderSELinuxAndKeepsLastGoodArtifact(t *testing.T) {
 	if strings.Contains(text, `runuser -u "$site_user" --`) {
 		t.Fatal("runner helper must not rely on direct setuid transitions")
 	}
+	if strings.Contains(text, `--property=NoNewPrivileges=yes --property=RestrictSUIDSGID=yes`) {
+		t.Fatal("site filesystem commands must allow chmod to preserve inherited setgid bits")
+	}
 }
 
 func TestRootlessRunnerUsesBoundedTransientService(t *testing.T) {

@@ -172,10 +172,15 @@ run_site_command() {
   local unit="stepanel-runner-sitecmd-${runner_owner_pid}-${RANDOM}.service"
   local log="$runner_log_dir/$BASHPID-$RANDOM.log"
   local status
+  # The staging directory inherits the site's setgid group bit. The chmod
+  # below intentionally preserves that bit so the web group can traverse the
+  # published artifact; RestrictSUIDSGID would reject the chmod syscall even
+  # though this service runs unprivileged. NoNewPrivileges remains enabled,
+  # so setuid/setgid files cannot elevate this command.
   if systemd-run --quiet --wait --collect --service-type=exec --unit="$unit" \
     --property="StandardOutput=append:$log" --property="StandardError=append:$log" \
     --uid="$site_user" --gid="$site_user" --working-directory=/ \
-    --property=NoNewPrivileges=yes --property=RestrictSUIDSGID=yes \
+    --property=NoNewPrivileges=yes \
     --property=PrivateTmp=yes --property=ProtectHome=yes \
     --property=ProtectSystem=strict --property=ProtectProc=invisible \
     --property="ReadWritePaths=$site_root" --property="ReadWritePaths=$runner_home" \

@@ -36,8 +36,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Durable operator alerts for failed and dead-letter jobs via signed HTTPS
   webhooks and STARTTLS-only SMTP. Alert events are written transactionally
   with job state, retried independently per channel, redacted in delivery
-  diagnostics, and surfaced in operational health. Configure with the
-  `STEPANEL_ALERT_*` variables documented in `docs/OPERATIONS.md`.
+  diagnostics, and surfaced in operational health. Webhook signatures and a
+  verified SMTP STARTTLS/authentication/message exchange are regression-tested.
+  Configure with the `STEPANEL_ALERT_*` variables documented in
+  `docs/OPERATIONS.md`.
 - Built-in WordPress application recovery proof. Rehearsing a WordPress
   backup restores it into a throwaway `stepanel-proof-<id>` site through the
   production lifecycle path (site account and PHP-FPM pool, database import
@@ -57,8 +59,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Changed
 
 - Native Caddy installation now falls back to installing Caddy's validated
-  local CA directly into the distribution system trust store when `caddy
-  trust` cannot integrate optional trust stores on minimal RHEL-family hosts.
+  local CA directly into the distribution system trust store when Caddy's
+  `caddy trust` helper cannot integrate optional stores on minimal EL hosts.
+- The hosted installation smoke now verifies that Caddy's local root CA is
+  trusted by the operating-system CA bundle, not merely that the installer
+  returned successfully.
 - WordPress recovery proofs now measure the restored public tree and reserve
   its additional site-volume capacity before creating or copying a throwaway
   site. Symlinks and special files are rejected during measurement, and a

@@ -1,17 +1,29 @@
 package stepanel
 
 import (
+	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -158,6 +170,187 @@ func TestOperatorWebhookDeliversSignedEventOverTLS(t *testing.T) {
 	want := "sha256=" + hex.EncodeToString(mac.Sum(nil))
 	if gotID != "event-123" || !hmac.Equal([]byte(gotSignature), []byte(want)) || gotBody != string(body) {
 		t.Fatalf("webhook id/signature/body = %q %q %q", gotID, gotSignature, gotBody)
+	}
+}
+
+func TestOperatorEmailDeliversUsingVerifiedSTARTTLS(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(42),
+		Subject:               pkix.Name{CommonName: "StePanel SMTP test"},
+		NotBefore:             now.Add(-time.Minute),
+		NotAfter:              now.Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate := x509.Certificate{Raw: der}
+	serverCert := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: &certificate}
+	roots := x509.NewCertPool()
+	roots.AddCert(&certificate)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	serverErr := make(chan error, 1)
+	captured := make(chan string, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			serverErr <- acceptErr
+			return
+		}
+		defer conn.Close()
+		if _, writeErr := io.WriteString(conn, "220 smtp.test ESMTP\r\n"); writeErr != nil {
+			serverErr <- writeErr
+			return
+		}
+		reader := bufio.NewReader(conn)
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil || !strings.HasPrefix(line, "EHLO ") {
+			serverErr <- fmt.Errorf("expected initial EHLO, got %q: %v", line, readErr)
+			return
+		}
+		if _, writeErr := io.WriteString(conn, "250-smtp.test\r\n250-STARTTLS\r\n250 SIZE 65536\r\n"); writeErr != nil {
+			serverErr <- writeErr
+			return
+		}
+		line, readErr = reader.ReadString('\n')
+		if readErr != nil || strings.TrimSpace(line) != "STARTTLS" {
+			serverErr <- fmt.Errorf("expected STARTTLS, got %q: %v", line, readErr)
+			return
+		}
+		if _, writeErr := io.WriteString(conn, "220 begin TLS\r\n"); writeErr != nil {
+			serverErr <- writeErr
+			return
+		}
+		tlsConn := tls.Server(conn, &tls.Config{Certificates: []tls.Certificate{serverCert}, MinVersion: tls.VersionTLS12})
+		if handshakeErr := tlsConn.Handshake(); handshakeErr != nil {
+			serverErr <- handshakeErr
+			return
+		}
+		conn = tlsConn
+		reader = bufio.NewReader(conn)
+		line, readErr = reader.ReadString('\n')
+		if readErr != nil || !strings.HasPrefix(line, "EHLO ") {
+			serverErr <- fmt.Errorf("expected post-TLS EHLO, got %q: %v", line, readErr)
+			return
+		}
+		if _, writeErr := io.WriteString(conn, "250-smtp.test\r\n250-AUTH PLAIN\r\n250 SIZE 65536\r\n"); writeErr != nil {
+			serverErr <- writeErr
+			return
+		}
+		line, readErr = reader.ReadString('\n')
+		if readErr != nil || !strings.HasPrefix(line, "AUTH PLAIN ") {
+			serverErr <- fmt.Errorf("expected AUTH PLAIN after TLS, got %q: %v", line, readErr)
+			return
+		}
+		credentials, decodeErr := base64.StdEncoding.DecodeString(strings.TrimSpace(strings.TrimPrefix(line, "AUTH PLAIN ")))
+		if decodeErr != nil || string(credentials) != "\x00smtp-user\x00smtp-password" {
+			serverErr <- fmt.Errorf("SMTP credentials were not protected by the expected TLS session: %q (%v)", credentials, decodeErr)
+			return
+		}
+		if _, writeErr := io.WriteString(conn, "235 2.7.0 authenticated\r\n"); writeErr != nil {
+			serverErr <- writeErr
+			return
+		}
+		for _, expected := range []string{"MAIL FROM:<panel@example.test>", "RCPT TO:<operator@example.test>"} {
+			line, readErr = reader.ReadString('\n')
+			if readErr != nil || strings.TrimSpace(line) != expected {
+				serverErr <- fmt.Errorf("expected %q, got %q: %v", expected, line, readErr)
+				return
+			}
+			if _, writeErr := io.WriteString(conn, "250 accepted\r\n"); writeErr != nil {
+				serverErr <- writeErr
+				return
+			}
+		}
+		line, readErr = reader.ReadString('\n')
+		if readErr != nil || strings.TrimSpace(line) != "DATA" {
+			serverErr <- fmt.Errorf("expected DATA, got %q: %v", line, readErr)
+			return
+		}
+		if _, writeErr := io.WriteString(conn, "354 end with dot\r\n"); writeErr != nil {
+			serverErr <- writeErr
+			return
+		}
+		var message strings.Builder
+		for {
+			line, readErr = reader.ReadString('\n')
+			if readErr != nil {
+				serverErr <- readErr
+				return
+			}
+			if line == ".\r\n" {
+				break
+			}
+			message.WriteString(line)
+		}
+		captured <- message.String()
+		if _, writeErr := io.WriteString(conn, "250 queued\r\n"); writeErr != nil {
+			serverErr <- writeErr
+			return
+		}
+		line, readErr = reader.ReadString('\n')
+		if readErr != nil || strings.TrimSpace(line) != "QUIT" {
+			serverErr <- fmt.Errorf("expected QUIT, got %q: %v", line, readErr)
+			return
+		}
+		_, serverWriteErr := io.WriteString(conn, "221 bye\r\n")
+		serverErr <- serverWriteErr
+	}()
+
+	_, portText, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{
+		AlertEmailTo:      "operator@example.test",
+		AlertEmailFrom:    "panel@example.test",
+		AlertSMTPHost:     "127.0.0.1",
+		AlertSMTPPort:     port,
+		AlertSMTPUser:     "smtp-user",
+		AlertSMTPPassword: "smtp-password",
+	}
+	alert := operatorAlertPayload{JobID: "job-123", JobKind: "site.restore", Resource: "demo", State: "dead-letter", CreatedAt: now.UTC()}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := deliverOperatorEmailWithTLSConfig(ctx, cfg, alert, &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}); err != nil {
+		t.Fatalf("deliver STARTTLS operator email: %v", err)
+	}
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			t.Fatalf("SMTP server protocol: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("SMTP server did not finish protocol exchange")
+	}
+	select {
+	case message := <-captured:
+		for _, expected := range []string{"To: operator@example.test", "From: panel@example.test", "Subject: StePanel operator job alert", "Job: job-123", "Type: site.restore", "Resource: demo", "State: dead-letter", "Error details are intentionally omitted"} {
+			if !strings.Contains(message, expected) {
+				t.Errorf("SMTP message is missing %q: %s", expected, message)
+			}
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("SMTP server did not capture the delivered message")
 	}
 }
 

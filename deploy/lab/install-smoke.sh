@@ -85,6 +85,22 @@ if [[ $STEPANEL_WEBSERVER == caddy ]] && ! grep -Eq 'reverse_proxy[[:space:]]+12
   echo 'Caddy panel proxy does not target the installed StePanel listen address' >&2
   exit 1
 fi
+if [[ $STEPANEL_WEBSERVER == caddy ]]; then
+  caddy_local_ca=/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt
+  if [[ ! -f $caddy_local_ca || -L $caddy_local_ca ]]; then
+    echo 'Caddy local root CA is missing or is a symlink' >&2
+    exit 1
+  fi
+  if command -v update-ca-certificates >/dev/null 2>&1; then
+    system_ca_bundle=/etc/ssl/certs/ca-certificates.crt
+  else
+    system_ca_bundle=/etc/pki/tls/certs/ca-bundle.crt
+  fi
+  if ! openssl verify -CAfile "$system_ca_bundle" "$caddy_local_ca"; then
+    echo 'Caddy local root CA is not trusted by the operating-system CA bundle' >&2
+    exit 1
+  fi
+fi
 # The recovery smoke runs the separately supervised worker, so make the
 # explicitly lab-only direct-broker mode visible to both installed units even
 # when the installer is exercising an environment-file transition.

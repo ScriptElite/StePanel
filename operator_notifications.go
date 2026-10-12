@@ -301,6 +301,20 @@ func deliverOperatorWebhookWithClient(parent context.Context, cfg Config, id str
 }
 
 func deliverOperatorEmail(parent context.Context, cfg Config, alert operatorAlertPayload) error {
+	return deliverOperatorEmailWithTLSConfig(parent, cfg, alert, &tls.Config{ServerName: cfg.AlertSMTPHost, MinVersion: tls.VersionTLS12})
+}
+
+// deliverOperatorEmailWithTLSConfig keeps the production TLS policy explicit
+// while allowing the SMTP protocol test to trust its own ephemeral test CA.
+func deliverOperatorEmailWithTLSConfig(parent context.Context, cfg Config, alert operatorAlertPayload, tlsConfig *tls.Config) error {
+	if tlsConfig == nil {
+		return errors.New("SMTP TLS configuration is required")
+	}
+	tlsConfig = tlsConfig.Clone()
+	tlsConfig.ServerName = cfg.AlertSMTPHost
+	if tlsConfig.MinVersion < tls.VersionTLS12 {
+		tlsConfig.MinVersion = tls.VersionTLS12
+	}
 	ctx, cancel := context.WithTimeout(parent, operatorNotificationTimeout)
 	defer cancel()
 	address := net.JoinHostPort(cfg.AlertSMTPHost, strconv.Itoa(cfg.AlertSMTPPort))
@@ -320,7 +334,7 @@ func deliverOperatorEmail(parent context.Context, cfg Config, alert operatorAler
 	if ok, _ := client.Extension("STARTTLS"); !ok {
 		return errors.New("SMTP server does not offer STARTTLS")
 	}
-	if err := client.StartTLS(&tls.Config{ServerName: cfg.AlertSMTPHost, MinVersion: tls.VersionTLS12}); err != nil {
+	if err := client.StartTLS(tlsConfig); err != nil {
 		return errors.New("SMTP TLS negotiation failed")
 	}
 	if cfg.AlertSMTPUser != "" {

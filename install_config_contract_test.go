@@ -123,11 +123,17 @@ func TestInstallerTrustsCaddyInternalCAAfterStartingWebServer(t *testing.T) {
 	text := string(script)
 	serviceStart := strings.Index(text, `systemctl enable --now "$APACHE_SERVICE" "$DB_SERVICE"`)
 	trust := strings.Index(text, `caddy trust --config /etc/caddy/Caddyfile`)
-	if serviceStart < 0 || trust < 0 || trust < serviceStart {
+	fallback := strings.Index(text, `CADDY_LOCAL_CA=/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt`)
+	if serviceStart < 0 || trust < 0 || trust < serviceStart || fallback < trust {
 		t.Fatal("installer must establish Caddy internal-CA trust after starting the web server")
 	}
 	caddyGuard := strings.LastIndex(text[:trust], `if [[ "$WEB_SERVER" == "caddy" ]]`)
 	if caddyGuard < serviceStart {
 		t.Fatal("Caddy trust installation must be restricted to Caddy hosts")
+	}
+	for _, required := range []string{"update-ca-certificates", "update-ca-trust extract", "openssl x509 -in \"$CADDY_LOCAL_CA\" -noout -checkend 0"} {
+		if !strings.Contains(text[fallback:], required) {
+			t.Errorf("Caddy trust fallback is missing %q", required)
+		}
 	}
 }

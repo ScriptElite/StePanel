@@ -331,7 +331,7 @@ for db_service in mysql mariadb postgresql; do
 done
 echo "  unix login accounts (uid >= 1000): $(awk -F: '$3 >= 1000 && $3 < 65534' /etc/passwd | wc -l)"
 echo "PROPOSED CHANGES:"
-echo "  INSTALL packages: php php-cli php-fpm $DB_PHP_PACKAGE php-curl php-mbstring php-xml acl quota tar gzip ca-certificates git sudo logrotate $WEB_PACKAGE $DB_PACKAGE"
+echo "  INSTALL packages: php php-cli php-fpm $DB_PHP_PACKAGE php-curl php-mbstring php-xml acl quota tar gzip ca-certificates openssl git sudo logrotate $WEB_PACKAGE $DB_PACKAGE"
 if web_package_available "$WEB_PACKAGE"; then
   echo "  web server package $WEB_PACKAGE: available"
 elif [[ "$PKG" == "apt" ]]; then
@@ -382,14 +382,14 @@ if (( GUIDED == 1 )); then
   fi
 fi
 
-if [[ "$PKG" == "apt" ]]; then export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get install -y php php-cli php-fpm "$DB_PHP_PACKAGE" php-curl php-mbstring php-xml acl quota tar gzip ca-certificates curl git sudo logrotate
+if [[ "$PKG" == "apt" ]]; then export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get install -y php php-cli php-fpm "$DB_PHP_PACKAGE" php-curl php-mbstring php-xml acl quota tar gzip ca-certificates openssl curl git sudo logrotate
 else
   # Rocky/Alma cloud images may ship the full curl package while minimal
   # images ship curl-minimal. They provide conflicting binaries, so do not
   # ask DNF to install curl-minimal when either provider is already present.
   RHEL_CURL_PACKAGES=(curl-minimal)
   if rpm -q curl >/dev/null 2>&1 || rpm -q curl-minimal >/dev/null 2>&1; then RHEL_CURL_PACKAGES=(); fi
-  dnf install -y php php-cli php-fpm "$DB_PHP_PACKAGE" php-curl php-mbstring php-xml acl quota tar gzip ca-certificates "${RHEL_CURL_PACKAGES[@]}" git sudo logrotate
+  dnf install -y php php-cli php-fpm "$DB_PHP_PACKAGE" php-curl php-mbstring php-xml acl quota tar gzip ca-certificates openssl "${RHEL_CURL_PACKAGES[@]}" git sudo logrotate
 fi
 if (( UNSAFE_LAB == 0 )); then
   quota_status=$(quotaon -p -u /var/www 2>&1) || {
@@ -1033,10 +1033,24 @@ if [[ "$WEB_SERVER" == "caddy" ]]; then
   # Caddy runs as an unprivileged service account and cannot install its
   # internal CA into the host trust store itself. Recovery proofs use normal
   # TLS verification for Caddy's private *.localhost routes, so establish the
-  # documented trust before enabling those proofs.
+  # documented trust before enabling those proofs. Prefer Caddy's own helper;
+  # on minimal RHEL hosts it can fail while attempting optional NSS/Java store
+  # integration even though the system trust store can be updated directly.
   if ! caddy trust --config /etc/caddy/Caddyfile; then
-    echo 'Unable to install Caddy internal CA trust; HTTPS WordPress recovery proofs would fail closed.' >&2
-    exit 1
+    CADDY_LOCAL_CA=/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt
+    if [[ ! -f "$CADDY_LOCAL_CA" || -L "$CADDY_LOCAL_CA" ]] || \
+      ! openssl x509 -in "$CADDY_LOCAL_CA" -noout -checkend 0 >/dev/null 2>&1 || \
+      ! openssl x509 -in "$CADDY_LOCAL_CA" -noout -ext basicConstraints 2>/dev/null | grep -q 'CA:TRUE'; then
+      echo 'Caddy internal CA is unavailable or invalid; HTTPS WordPress recovery proofs would fail closed.' >&2
+      exit 1
+    fi
+    if [[ "$PKG" == "apt" ]]; then
+      install -o root -g root -m 0644 "$CADDY_LOCAL_CA" /usr/local/share/ca-certificates/stepanel-caddy-local-root.crt
+      update-ca-certificates
+    else
+      install -D -o root -g root -m 0644 "$CADDY_LOCAL_CA" /etc/pki/ca-trust/source/anchors/stepanel-caddy-local-root.crt
+      update-ca-trust extract
+    fi
   fi
 fi
 systemctl enable --now stepanel-root-broker.service

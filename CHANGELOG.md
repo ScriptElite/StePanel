@@ -56,6 +56,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- Native Caddy installation now falls back to installing Caddy's validated
+  local CA directly into the distribution system trust store when `caddy
+  trust` cannot integrate optional trust stores on minimal RHEL-family hosts.
 - WordPress recovery proofs now measure the restored public tree and reserve
   its additional site-volume capacity before creating or copying a throwaway
   site. Symlinks and special files are rejected during measurement, and a

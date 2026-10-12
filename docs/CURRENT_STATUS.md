@@ -20,14 +20,19 @@ See [V1_PRODUCTION_GATES.md](./V1_PRODUCTION_GATES.md) for complete gate require
 
 The 2026-10-11 hosted install smoke passed on both Rocky Linux 9 and
 AlmaLinux 9, including one default interruption-matrix iteration per OS.
-Current CI and CodeQL also passed for the tested commit. This evidence is
-container-based and does not close Gate 5's repeated VM/power-loss/ENOSPC
-requirements. A 2026-10-12 Rocky KVM run then passed one full recovery matrix,
-abrupt guest loss while idle and during backup, and backup/file-restore ENOSPC.
-Its first rootless-runner attempt exposed an SELinux relabel failure; the
-site-owned script fix passed the runner and release-pipeline retests on the
-same guest. Repeated matrices and physical power-loss evidence remain open;
-see the [KVM record](lab-results/2026-10-12-rocky9-kvm-certification.md).
+For `7d0754f4`, hosted [CI](https://github.com/cyberducttape/StePanel/actions/runs/38224814805),
+[CodeQL](https://github.com/cyberducttape/StePanel/actions/runs/38238903409),
+[Rocky/Alma installation smoke](https://github.com/cyberducttape/StePanel/actions/runs/38238726272),
+and [quota-enabled installation](https://github.com/cyberducttape/StePanel/actions/runs/38224814910)
+passed. On 2026-10-12, the Rocky Linux 9 KVM guest completed the full
+recovery matrix twice consecutively, including the extended journal-boundary
+cases; the previous 2026-10-11 repeat attempt remains a recorded failure, not
+erased evidence. The guest also passed abrupt-loss and ENOSPC checks recorded
+in the [KVM evidence](lab-results/2026-10-12-rocky9-kvm-certification.md).
+The two-repeat run is useful installed-host evidence but is not the required
+20–50 repetitions, did not simulate physical host power loss, and did not
+exercise every ENOSPC boundary. Gate 5 remains open; see the
+[repeat-matrix record](lab-results/2026-10-12-rocky9-repeated-recovery-matrix.md).
 
 | Gate | Requirement | Status | Blocker |
 |------|-------------|--------|---------|
@@ -35,7 +40,7 @@ see the [KVM record](lab-results/2026-10-12-rocky9-kvm-certification.md).
 | **Gate 2** | Cross-Process Lock Enforcement | ✅ MET (2026-10-02) | None; interrupted conflicting workflows are covered by `workflow_interruption_test.go` |
 | **Gate 3** | Capability Reporting | ✅ COMPLETE | None |
 | **Gate 4** | Automated Archive Database Restoration | ✅ COMPLETE | None |
-| **Gate 5** | Failure Recovery Testing | 🔄 PARTIAL | Repeated (20–50×) real-host matrix, ENOSPC beyond backup, physical power loss |
+| **Gate 5** | Failure Recovery Testing | 🔄 PARTIAL | 20–50× repeated matrix (two consecutive full Rocky KVM runs now recorded), ENOSPC beyond backup/file restore, physical power loss |
 
 **Overall:** Operator Beta gates are in place; Gate 5 Phase 7 remains open for production approval.
 
@@ -113,9 +118,10 @@ see the [KVM record](lab-results/2026-10-12-rocky9-kvm-certification.md).
   and its caller-controlled helper/action/argv payload have been removed; an
   untyped production helper call now fails closed. Development installs retain
   direct helper execution for local workflows.
-- The reported CodeQL path and integer alerts are resolved; the hosted CodeQL
-  scan for `635ea5f` reported zero open alerts. The local full race suite and
-  serial suite pass through `eb39e63`. These checks are release evidence,
+- The reported CodeQL path, integer, command-injection, and uncontrolled-path
+  alerts are resolved; the hosted CodeQL scan for `7d0754f4` passed with zero
+  open alerts. CI for this commit passed formatting, Go tests, vet, race,
+  coverage, and configured recovery checks. These checks are release evidence,
   not claims that the remaining production gates are closed.
 
 ---
@@ -156,7 +162,7 @@ limited to non-production development installs.
 
 ### Gate 5: Failure Injection Testing (partial; Phase 7 remains open)
 
-**Status:** Partial. The 2026-10-10 KVM run passed installation and the full 107-pass recovery matrix once on a SELinux-enforcing Rocky Linux 9 guest ([results](lab-results/2026-10-10-rocky9-kvm-full-matrix.md)); a two-iteration full-matrix attempt on 2026-10-11 completed its first iteration but failed in the second when a worker restart left an empty audit lock ([failure record](lab-results/2026-10-11-rocky9-repeat-matrix-attempt.md)). The zero-byte lock blocked audit-dependent requests. Atomic lock publication and stale-empty-lock recovery now pass unit/race tests; the patched binary also recovered a seeded empty lock in the disposable KVM guest and passed a fresh cpmove import. A successful full repeated-matrix rerun is still required. The 2026-10-09 run additionally passed abrupt guest kills and a real ENOSPC backup ([results](lab-results/2026-10-09-rocky9-kvm-certification.md)). A focused 2026-10-11 KVM test also passed real ext4 ENOSPC during file restore ([results](lab-results/2026-10-11-real-enospc-restore.md)). The latest hosted installation smoke run `38076651823` also passed on both AlmaLinux 9 and Rocky Linux 9. Earlier, hosted recovery evidence passed on both disposable distributions for the default drills and the expanded alternate kill-boundary matrix covering cpmove, backup, file restore, termination, account suspension, and Git deploy. A Rocky Linux 9.8 VM passed the same installed-host drills plus abrupt QEMU-process kill/reboot and MariaDB service outage/restart checks; the full Phase 7 failure matrix remains open.
+**Status:** Partial. The 2026-10-10 KVM run passed installation and the full 107-pass recovery matrix once on a SELinux-enforcing Rocky Linux 9 guest ([results](lab-results/2026-10-10-rocky9-kvm-full-matrix.md)); the 2026-10-11 two-iteration attempt completed its first iteration but failed in the second when a worker restart left an empty audit lock ([failure record](lab-results/2026-10-11-rocky9-repeat-matrix-attempt.md)). The zero-byte lock blocked audit-dependent requests. Atomic lock publication and stale-empty-lock recovery now pass unit/race tests. A subsequent 2026-10-12 full extended matrix completed two consecutive iterations on the disposable Rocky guest, including worker and panel interruption at the applicable backup, restore, termination, suspension, cpmove, and Git activation boundaries ([results](lab-results/2026-10-12-rocky9-repeated-recovery-matrix.md)). This is not 20–50 repetitions and does not supersede the prior failure record. The 2026-10-09 run additionally passed abrupt guest kills and a real ENOSPC backup ([results](lab-results/2026-10-09-rocky9-kvm-certification.md)); a focused 2026-10-11 KVM test passed real ext4 ENOSPC during file restore ([results](lab-results/2026-10-11-real-enospc-restore.md)). The full Phase 7 failure matrix remains open: publication/import/database-restore ENOSPC, physical host power loss, and additional repetitions remain unproven.
 
 - ✅ Phase 1: Failure Injection Framework (100%)
 - ✅ Phase 2: Durable Checkpoint System (100%)

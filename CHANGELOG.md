@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Testing and documentation
+
+- Recorded a successful two-iteration full recovery matrix on the disposable
+  Rocky Linux 9 KVM host, including the extended cpmove, backup, restore,
+  termination, suspension, and deployment interruption checkpoints. The
+  release gate remains open: two repetitions do not meet the 20–50-run target,
+  and physical power-loss and additional ENOSPC scenarios remain untested.
+
 ### Security
 
 - WordPress recovery proofs now validate HTTPS certificates and hostnames,

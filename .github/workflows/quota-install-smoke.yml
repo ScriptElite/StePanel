@@ -85,6 +85,7 @@ jobs:
               quotaon -p -u /var/www | grep -F 'user quota on /var/www'
               mkfs.ext4 -F /dev/vdc
               install -d -m 0700 /mnt/stepanel-enospc
+              printf '%s\\n' '/dev/vdc /mnt/stepanel-enospc ext4 defaults 0 2' >> /etc/fstab
               mount /dev/vdc /mnt/stepanel-enospc
               touch /run/stepanel-quota-ready
           EOF

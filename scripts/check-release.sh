@@ -65,6 +65,10 @@ if ! grep -Fq -- '-snapshot-recovery-root /var/www/sites/.stepanel-recovery' dep
   echo "root broker service does not declare the panel snapshot recovery root" >&2
   exit 1
 fi
+if ! grep -Fq "'/dev/vdc /mnt/stepanel-enospc ext4 defaults 0 2' >> /etc/fstab" .github/workflows/quota-install-smoke.yml; then
+  echo "quota smoke does not persist its ENOSPC volume across guest reboot" >&2
+  exit 1
+fi
 
 chart_version=$(sed -n 's/^version: \([^[:space:]]*\)$/\1/p' deploy/helm/stepanel/Chart.yaml)
 chart_app_version=$(sed -n 's/^appVersion: "\([^"]*\)"$/\1/p' deploy/helm/stepanel/Chart.yaml)

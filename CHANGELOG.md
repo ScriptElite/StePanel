@@ -34,6 +34,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- Persist the quota-smoke ENOSPC volume in the disposable guest's `/etc/fstab`
+  so it is remounted after the workflow's abrupt-reboot drill; the previous
+  workflow reached recovery successfully but then failed its ENOSPC phase
+  because `/mnt/stepanel-enospc` was no longer mounted.
 - Execute the runner's site-account filesystem commands through narrowly
   scoped systemd transient units instead of direct `runuser` transitions.
   The direct-root permission smoke did not reproduce the failure that occurred

@@ -45,6 +45,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- WordPress recovery proofs now measure the restored public tree and reserve
+  its additional site-volume capacity before creating or copying a throwaway
+  site. Symlinks and special files are rejected during measurement, and a
+  regression test verifies capacity admission happens before privileged setup.
 - Fixed two root-broker vhost validation mismatches that broke production
   route operations: route deletion accepted only `*.conf` names, so every
   route removal on Caddy hosts (whose helper writes `*.caddy`) was rejected;

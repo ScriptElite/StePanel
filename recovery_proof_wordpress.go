@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -46,6 +47,7 @@ const (
 	// wordpressProofReloadRetries bounds retries of 404/502/503 responses
 	// while the web server and PHP-FPM reload (about a minute).
 	wordpressProofReloadRetries = 15
+	wordpressProofTreeMaxBytes  = maxBackupBytes
 )
 
 // errRecoveryProofUnsupported reports a backup the built-in WordPress proof
@@ -65,6 +67,44 @@ const (
 // remove a proof site without risk of touching a customer site.
 func isRecoveryProofSiteName(name string) bool {
 	return strings.HasPrefix(name, recoveryProofSitePrefix)
+}
+
+// wordpressProofTreeSize measures the extra site-volume space required by
+// the staging copy. Refuse links and special files rather than following
+// mutable paths or silently under-reserving them.
+func wordpressProofTreeSize(ctx context.Context, root string) (uint64, error) {
+	var total uint64
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("WordPress proof tree contains symlink %s", filepath.Base(path))
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() || info.Size() < 0 {
+			return fmt.Errorf("WordPress proof tree contains non-regular file %s", filepath.Base(path))
+		}
+		size := uint64(info.Size())
+		if size > uint64(wordpressProofTreeMaxBytes)-total {
+			return fmt.Errorf("WordPress proof tree exceeds %d-byte limit", wordpressProofTreeMaxBytes)
+		}
+		total += size
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("measure WordPress proof tree: %w", err)
+	}
+	return total, nil
 }
 
 type wordpressProofResult struct {
@@ -278,6 +318,15 @@ func (a *App) proveWordPressRestore(ctx context.Context, stage string, databases
 	if exists, err := a.siteExists(plan.site); err != nil || exists {
 		return result, fmt.Errorf("recovery proof site %s is unavailable (exists=%t): %v", plan.site, exists, err)
 	}
+	proofBytes, err := wordpressProofTreeSize(lockCtx, plan.public)
+	if err != nil {
+		return result, err
+	}
+	reservation, err := a.capacity.reserve(a.Config, "wordpress-recovery-proof", a.Config.WebRoot, []capacityDemand{{Path: a.Config.WebRoot, Bytes: proofBytes}})
+	if err != nil {
+		return result, fmt.Errorf("admit WordPress recovery proof site copy: %w", err)
+	}
+	defer reservation.release()
 	intent, err := BeginSecurityAudit(a.Config.AuditLog, "system", "recovery.proof.site", plan.site, "throwaway WordPress site "+plan.hostname)
 	if err != nil {
 		return result, err

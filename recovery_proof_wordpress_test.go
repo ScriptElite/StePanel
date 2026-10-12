@@ -202,6 +202,40 @@ func TestWordPressProofFailsAndTearsDownWhenDatabaseIsUnreachable(t *testing.T) 
 	f.assertTornDown(t)
 }
 
+func TestWordPressProofReservesSiteVolumeBeforeCopy(t *testing.T) {
+	f := newWordPressProofFixture(t, proofTestConfig)
+	f.app.Config.MinFreeBytes = 1 << 62
+	_, err := f.app.proveWordPressRestore(context.Background(), f.stage, []string{"shop_db"})
+	if err == nil || !strings.Contains(err.Error(), "admit WordPress recovery proof site copy") {
+		t.Fatalf("proof error = %v, want site-volume capacity admission failure", err)
+	}
+	if calls := f.helperCalls(t); calls != "" {
+		t.Fatalf("capacity failure reached privileged helpers:\n%s", calls)
+	}
+	entries, readErr := os.ReadDir(filepath.Join(f.webRoot, "sites"))
+	if readErr != nil || len(entries) != 0 {
+		t.Fatalf("site tree was created before capacity admission: entries=%v err=%v", entries, readErr)
+	}
+}
+
+func TestWordPressProofTreeSizeRejectsSymlinks(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "index.php")
+	if err := os.WriteFile(file, []byte("12345"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	size, err := wordpressProofTreeSize(context.Background(), root)
+	if err != nil || size != 5 {
+		t.Fatalf("tree size = %d, err=%v; want 5", size, err)
+	}
+	if err := os.Symlink(file, filepath.Join(root, "linked.php")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wordpressProofTreeSize(context.Background(), root); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("symlink tree error = %v, want rejection", err)
+	}
+}
+
 func TestWordPressProofRejectsRedirectToCustomerDomain(t *testing.T) {
 	f := newWordPressProofFixture(t, proofTestConfig)
 	serveProofWebServer(t, func(w http.ResponseWriter, r *http.Request) {

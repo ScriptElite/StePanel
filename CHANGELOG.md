@@ -8,6 +8,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Security
 
+- WordPress recovery proofs now validate HTTPS certificates and hostnames,
+  trusting the host certificate authorities instead of disabling TLS checks.
+  The off-site recovery CLI also suppresses raw helper errors that could
+  contain a temporary restored-database credential.
 - The root broker now caps each request at 8 MiB (previously 96 MiB per
   socket connection, and unbounded on the stdin transport) and charges
   buffered request bytes to a 64 MiB broker-wide budget, so 64 concurrent

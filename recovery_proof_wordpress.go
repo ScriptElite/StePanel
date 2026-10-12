@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -456,6 +457,10 @@ func (a *App) teardownWordPressProof(ctx context.Context, txn *SiteTransaction, 
 // WordPress ignored the proof's WP_HOME and would have served a customer
 // domain.
 func probeWordPress(ctx context.Context, scheme, hostname string) ([]string, error) {
+	return probeWordPressWithRoots(ctx, scheme, hostname, nil)
+}
+
+func probeWordPressWithRoots(ctx context.Context, scheme, hostname string, roots *x509.CertPool) ([]string, error) {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -465,9 +470,10 @@ func probeWordPress(ctx context.Context, scheme, hostname string) ([]string, err
 			}
 			return dialer.DialContext(ctx, network, net.JoinHostPort("127.0.0.1", port))
 		},
-		// The proof hostname is served by the web server's internal CA on a
-		// loopback connection this process dialed itself.
-		TLSClientConfig:       &tls.Config{ServerName: hostname, InsecureSkipVerify: true}, //nolint:gosec
+		// Caddy installs its internal CA in the host trust store. Verify the
+		// certificate and hostname normally; a loopback dial is not a reason to
+		// disable TLS authentication.
+		TLSClientConfig:       &tls.Config{ServerName: hostname, RootCAs: roots, MinVersion: tls.VersionTLS12},
 		ResponseHeaderTimeout: 30 * time.Second,
 		DisableKeepAlives:     true,
 	}

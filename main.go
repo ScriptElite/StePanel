@@ -192,7 +192,11 @@ func Main() {
 	if len(os.Args) == 2 && os.Args[1] == "offsite-recovery-proof" {
 		result, err := RunOffsiteRecoveryProof(LoadConfig())
 		if err != nil {
-			log.Fatal(err)
+			// Recovery-proof errors can wrap database-helper output. That output
+			// may contain the temporary database credential used by the proof, so
+			// do not send the raw error to process logs.
+			_, _ = fmt.Fprintln(os.Stderr, "offsite recovery proof failed; details suppressed to protect restored credentials")
+			os.Exit(1)
 		}
 		data, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {

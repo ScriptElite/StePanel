@@ -2,6 +2,7 @@ package stepanel
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cyberducttape/StePanel/internal/recovery"
 	siteauthority "github.com/cyberducttape/StePanel/internal/sites"
@@ -112,6 +114,38 @@ func serveProofWebServer(t *testing.T, handler http.HandlerFunc) {
 	original := wordpressProofPorts
 	wordpressProofPorts.http = port
 	t.Cleanup(func() { wordpressProofPorts = original })
+}
+
+func TestWordPressProofHTTPSVerifiesTrustedCertificate(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/wp-login.php" {
+			_, _ = w.Write([]byte(`<form><input name="log"></form>`))
+			return
+		}
+		_, _ = w.Write([]byte(`<link href="/wp-content/themes/x/style.css">`))
+	}))
+	t.Cleanup(server.Close)
+	_, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := wordpressProofPorts
+	wordpressProofPorts.https = port
+	t.Cleanup(func() { wordpressProofPorts = original })
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	checks, err := probeWordPressWithRoots(t.Context(), "https", "127.0.0.1", roots)
+	if err != nil {
+		t.Fatalf("trusted HTTPS proof probe failed: %v", err)
+	}
+	if len(checks) != 2 {
+		t.Fatalf("HTTPS proof checks = %v, want home and login checks", checks)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if _, err := probeWordPress(ctx, "https", "127.0.0.1"); err == nil {
+		t.Fatal("HTTPS proof accepted an untrusted certificate")
+	}
 }
 
 func (f *wordpressProofFixture) assertTornDown(t *testing.T) {

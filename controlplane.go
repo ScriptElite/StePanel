@@ -101,12 +101,15 @@ CREATE TABLE IF NOT EXISTS totp_replay (
     updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS capacity_reservations (
-    reservation_id TEXT PRIMARY KEY,
+    reservation_id TEXT NOT NULL,
     device INTEGER NOT NULL,
     bytes INTEGER NOT NULL,
     workflow TEXT NOT NULL,
     staging_path TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    owner_pid INTEGER NOT NULL DEFAULT 0,
+    owner_start TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (reservation_id, device)
 );
 CREATE INDEX IF NOT EXISTS capacity_reservations_device_idx ON capacity_reservations(device);
 `

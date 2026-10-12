@@ -49,6 +49,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   its additional site-volume capacity before creating or copying a throwaway
   site. Symlinks and special files are rejected during measurement, and a
   regression test verifies capacity admission happens before privileged setup.
+- Cross-process capacity reservations now record the owning Linux process's
+  boot ID and start time. Startup reclaims reservations only when that exact
+  process is confirmed gone, preventing a killed workflow from reserving disk
+  space indefinitely without expiring live work.
 - Fixed two root-broker vhost validation mismatches that broke production
   route operations: route deletion accepted only `*.conf` names, so every
   route removal on Caddy hosts (whose helper writes `*.caddy`) was rejected;

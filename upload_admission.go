@@ -33,6 +33,8 @@ var uploadIdleTimeout = 2 * time.Minute
 
 var capacityReservationSequence uint64
 
+var errCapacityOwnerProcessMissing = errors.New("capacity reservation owner process is missing")
+
 // capacityError reports that a filesystem cannot hold a workflow's demands
 // plus the STEPANEL_MIN_FREE_BYTES reserve.
 type capacityError struct{ message string }
@@ -93,9 +95,11 @@ func filesystemDevice(path string) (uint64, error) {
 // concurrent uploads cannot each claim the same bytes. The zero value is
 // ready to use.
 type capacityLedger struct {
-	mu   sync.Mutex
-	held map[uint64]uint64
-	db   *sql.DB
+	mu         sync.Mutex
+	held       map[uint64]uint64
+	db         *sql.DB
+	ownerPID   int
+	ownerStart string
 }
 
 // capacityReservation is one upload's outstanding promise.
@@ -130,6 +134,8 @@ func newCapacityLedger(db *sql.DB) (*capacityLedger, error) {
 		workflow TEXT NOT NULL,
 		staging_path TEXT NOT NULL,
 		created_at INTEGER NOT NULL,
+		owner_pid INTEGER NOT NULL DEFAULT 0,
+		owner_start TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY(reservation_id, device)
 	);
 	CREATE INDEX IF NOT EXISTS capacity_reservations_device_idx ON capacity_reservations(device);`); err != nil {
@@ -138,7 +144,129 @@ func newCapacityLedger(db *sql.DB) (*capacityLedger, error) {
 	if err := migrateCapacityReservationKey(db); err != nil {
 		return nil, err
 	}
-	return &capacityLedger{db: db}, nil
+	if err := ensureCapacityReservationOwnerColumns(db); err != nil {
+		return nil, err
+	}
+	ownerStart, err := linuxProcessStartIdentity(os.Getpid())
+	if err != nil {
+		return nil, fmt.Errorf("identify capacity reservation owner process: %w", err)
+	}
+	if err := reclaimOrphanedCapacityReservations(db); err != nil {
+		return nil, fmt.Errorf("reclaim orphaned capacity reservations: %w", err)
+	}
+	return &capacityLedger{db: db, ownerPID: os.Getpid(), ownerStart: ownerStart}, nil
+}
+
+// linuxProcessStartIdentity combines the boot ID and /proc start time. PID
+// alone is insufficient because it can be reused, and start time alone resets
+// after reboot while the control-plane database survives.
+func linuxProcessStartIdentity(pid int) (string, error) {
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%w: pid %d", errCapacityOwnerProcessMissing, pid)
+		}
+		return "", err
+	}
+	bootID, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return "", err
+	}
+	end := strings.LastIndexByte(string(stat), ')')
+	if end < 0 {
+		return "", errors.New("invalid process stat record")
+	}
+	fields := strings.Fields(string(stat[end+1:]))
+	// The first field after comm is field 3; starttime is field 22.
+	if len(fields) <= 19 {
+		return "", errors.New("process stat record has no start time")
+	}
+	return strings.TrimSpace(string(bootID)) + ":" + fields[19], nil
+}
+
+func ensureCapacityReservationOwnerColumns(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(capacity_reservations)`)
+	if err != nil {
+		return fmt.Errorf("inspect capacity reservation owner schema: %w", err)
+	}
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("read capacity reservation owner schema: %w", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate capacity reservation owner schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close capacity reservation owner schema: %w", err)
+	}
+	for _, column := range []struct{ name, ddl string }{
+		{"owner_pid", `ALTER TABLE capacity_reservations ADD COLUMN owner_pid INTEGER NOT NULL DEFAULT 0`},
+		{"owner_start", `ALTER TABLE capacity_reservations ADD COLUMN owner_start TEXT NOT NULL DEFAULT ''`},
+	} {
+		if !columns[column.name] {
+			if _, err := db.Exec(column.ddl); err != nil {
+				return fmt.Errorf("add capacity reservation %s column: %w", column.name, err)
+			}
+		}
+	}
+	return nil
+}
+
+func reclaimOrphanedCapacityReservations(db *sql.DB) error {
+	rows, err := db.Query(`SELECT DISTINCT owner_pid,owner_start FROM capacity_reservations`)
+	if err != nil {
+		return err
+	}
+	type owner struct {
+		pid   int
+		start string
+	}
+	var owners []owner
+	for rows.Next() {
+		var item owner
+		if err := rows.Scan(&item.pid, &item.start); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		owners = append(owners, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range owners {
+		actual, statErr := linuxProcessStartIdentity(item.pid)
+		if item.pid > 0 && statErr == nil && actual == item.start {
+			continue
+		}
+		if item.pid > 0 {
+			// A missing /proc/PID/stat or a different boot/start identity proves
+			// this PID is gone or has been reused. Preserve the reservation if
+			// /proc is restricted or temporarily unreadable instead of treating
+			// every metadata error as evidence of a dead process.
+			if statErr != nil && !errors.Is(statErr, errCapacityOwnerProcessMissing) {
+				continue
+			}
+			if statErr == nil && actual == item.start {
+				continue
+			}
+		}
+		if _, err := db.Exec(`DELETE FROM capacity_reservations WHERE owner_pid=? AND owner_start=?`, item.pid, item.start); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // migrateCapacityReservationKey upgrades the initial single-column primary
@@ -176,7 +304,7 @@ func migrateCapacityReservationKey(db *sql.DB) error {
 	defer tx.Rollback()
 	statements := []string{
 		`ALTER TABLE capacity_reservations RENAME TO capacity_reservations_legacy`,
-		`CREATE TABLE capacity_reservations (reservation_id TEXT NOT NULL, device INTEGER NOT NULL, bytes INTEGER NOT NULL, workflow TEXT NOT NULL, staging_path TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(reservation_id, device))`,
+		`CREATE TABLE capacity_reservations (reservation_id TEXT NOT NULL, device INTEGER NOT NULL, bytes INTEGER NOT NULL, workflow TEXT NOT NULL, staging_path TEXT NOT NULL, created_at INTEGER NOT NULL, owner_pid INTEGER NOT NULL DEFAULT 0, owner_start TEXT NOT NULL DEFAULT '', PRIMARY KEY(reservation_id, device))`,
 		`INSERT INTO capacity_reservations(reservation_id,device,bytes,workflow,staging_path,created_at) SELECT reservation_id,device,bytes,workflow,staging_path,created_at FROM capacity_reservations_legacy`,
 		`DROP TABLE capacity_reservations_legacy`,
 		`CREATE INDEX IF NOT EXISTS capacity_reservations_device_idx ON capacity_reservations(device)`,
@@ -428,7 +556,7 @@ func (l *capacityLedger) admitDurable(cfg Config, workflow string, grouped []dev
 			if err != nil {
 				return nil, err
 			}
-			if _, err := tx.Exec(`INSERT INTO capacity_reservations(reservation_id,device,bytes,workflow,staging_path,created_at) VALUES(?,?,?,?,?,unixepoch())`, reservation.id, demand.device, bytes, workflow, demand.path); err != nil {
+			if _, err := tx.Exec(`INSERT INTO capacity_reservations(reservation_id,device,bytes,workflow,staging_path,created_at,owner_pid,owner_start) VALUES(?,?,?,?,?,unixepoch(),?,?)`, reservation.id, demand.device, bytes, workflow, demand.path, l.ownerPID, l.ownerStart); err != nil {
 				return nil, fmt.Errorf("persist capacity reservation: %w", err)
 			}
 			reservation.held[demand.device] = demand.bytes

@@ -247,6 +247,72 @@ func TestCapacityReservationsCoordinateAcrossLedgerInstances(t *testing.T) {
 	secondHold.release()
 }
 
+func TestCapacityLedgerReclaimsOnlyReservationsFromDeadProcesses(t *testing.T) {
+	cfg := uploadTestConfig(t)
+	cfg.MinFreeBytes = 0
+	db, err := openControlPlaneDB(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	first, err := newCapacityLedger(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := first.reserve(cfg, "live-owner", cfg.ImportRoot, []capacityDemand{{Path: cfg.ImportRoot, Bytes: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reservation.release()
+	if _, err := newCapacityLedger(db); err != nil {
+		t.Fatalf("second live process ledger initialization failed: %v", err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM capacity_reservations`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("live reservation count = %d, err=%v; want 1", count, err)
+	}
+	if _, err := db.Exec(`UPDATE capacity_reservations SET owner_pid=?,owner_start=?`, 2147483647, "old-boot:stale-process"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newCapacityLedger(db); err != nil {
+		t.Fatalf("ledger failed to reclaim dead process reservation: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM capacity_reservations`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("orphan reservation count = %d, err=%v; want 0", count, err)
+	}
+}
+
+func TestCapacityLedgerMigratesAndReclaimsLegacyReservationRows(t *testing.T) {
+	db, err := openControlPlaneDB(filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`DROP TABLE capacity_reservations;
+		CREATE TABLE capacity_reservations (
+			reservation_id TEXT PRIMARY KEY,
+			device INTEGER NOT NULL,
+			bytes INTEGER NOT NULL,
+			workflow TEXT NOT NULL,
+			staging_path TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		);
+		INSERT INTO capacity_reservations VALUES('legacy',1,100,'old-workflow','/tmp',unixepoch());`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newCapacityLedger(db); err != nil {
+		t.Fatalf("migrate legacy capacity reservations: %v", err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM capacity_reservations`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("legacy orphan reservation count = %d, err=%v; want 0", count, err)
+	}
+	var ownerColumns int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('capacity_reservations') WHERE name IN ('owner_pid','owner_start')`).Scan(&ownerColumns); err != nil || ownerColumns != 2 {
+		t.Fatalf("capacity owner columns = %d, err=%v; want 2", ownerColumns, err)
+	}
+}
+
 func TestDurableCapacityReservationSupportsMultipleDevices(t *testing.T) {
 	cfg := uploadTestConfig(t)
 	cfg.MinFreeBytes = 0

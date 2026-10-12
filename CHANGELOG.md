@@ -424,6 +424,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
+- Fix rootless Podman builds on SELinux-enforcing hosts by staging the
+  read-only build script with the site account as owner. Root-owned bind-mount
+  inputs could not receive Podman's private SELinux MCS label (`lsetxattr`
+  returned `operation not permitted`), preventing runner and release builds.
 - Close CodeQL's recovery path-injection and multipart reflected-XSS paths by
   requiring canonical absolute recovery paths and replacing parser errors with
   fixed client-safe upload errors before response handling; capacity failures

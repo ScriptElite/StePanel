@@ -158,7 +158,12 @@ cleanup_runner() {
   rm -rf -- "$runner_log_dir" 2>/dev/null || true
 }
 trap cleanup_runner EXIT
-install -o root -g "$site_gid" -m 0640 -- "$script" "$runner_script"
+# Podman rootless storage relabels bind-mounted paths with a private SELinux
+# MCS label. The site-owned transient service must own every mounted input it
+# relabels; a root-owned script here makes lsetxattr fail on enforcing RHEL.
+# The parent remains root-owned and non-writable, and the script is read-only
+# so the site account can consume but cannot replace its directory entry.
+install -o "$site_user" -g "$site_gid" -m 0400 -- "$script" "$runner_script"
 
 # The root broker runs under a hardened systemd service context. Direct
 # runuser/setuid transitions can fail when a build is requested through the
@@ -360,7 +365,7 @@ site_root_gid=$(stat -c '%g' -- "$site_root")
 # private primary group; never expose customer build contents to other local
 # accounts or copy them into the mutable document root.
 build_script="$runner_script"
-[[ $(stat -c '%u:%g:%a' -- "$build_script") == "0:$site_gid:640" ]] || { echo 'runner script has unexpected ownership or mode' >&2; exit 1; }
+[[ $(stat -c '%u:%g:%a' -- "$build_script") == "$site_uid:$site_gid:400" ]] || { echo 'runner script has unexpected ownership or mode' >&2; exit 1; }
 # Build from a copy of the source. The container mounts use :Z so SELinux
 # gives them a private container label; mounting the live document root (or
 # a release about to be published) that way would relabel served files and

@@ -887,6 +887,8 @@ func TestRunnerWorksUnderSELinuxAndKeepsLastGoodArtifact(t *testing.T) {
 		`run_site_command mv -T -- "$build_artifact" "$artifact"`,
 		`--uid="$site_user" --gid="$site_user"`,
 		`runner_script_dir=$(mktemp -d /run/stepanel-runner-input.XXXXXXXX)`,
+		`install -o "$site_user" -g "$site_gid" -m 0400 -- "$script" "$runner_script"`,
+		`[[ $(stat -c '%u:%g:%a' -- "$build_script") == "$site_uid:$site_gid:400" ]]`,
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("runner helper is missing %q", required)

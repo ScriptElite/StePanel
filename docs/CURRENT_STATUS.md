@@ -1,7 +1,7 @@
 # StePanel Project Status
 
 **Version:** v0.7.0 (Operator Beta)  
-**Last Updated:** 2026-10-11
+**Last Updated:** 2026-10-12
 **Status:** Operator Beta; not approved for v1.0 production release
 
 ---
@@ -22,7 +22,12 @@ The 2026-10-11 hosted install smoke passed on both Rocky Linux 9 and
 AlmaLinux 9, including one default interruption-matrix iteration per OS.
 Current CI and CodeQL also passed for the tested commit. This evidence is
 container-based and does not close Gate 5's repeated VM/power-loss/ENOSPC
-requirements; see the [run record](lab-results/2026-10-11-hosted-install-smoke.md).
+requirements. A 2026-10-12 Rocky KVM run then passed one full recovery matrix,
+abrupt guest loss while idle and during backup, and backup/file-restore ENOSPC.
+Its first rootless-runner attempt exposed an SELinux relabel failure; the
+site-owned script fix passed the runner and release-pipeline retests on the
+same guest. Repeated matrices and physical power-loss evidence remain open;
+see the [KVM record](lab-results/2026-10-12-rocky9-kvm-certification.md).
 
 | Gate | Requirement | Status | Blocker |
 |------|-------------|--------|---------|
@@ -48,6 +53,13 @@ requirements; see the [run record](lab-results/2026-10-11-hosted-install-smoke.m
   container CI could not see (scheduled tasks, Git deploys after sealing, the
   rootless build runner). See
   [lab-results/2026-10-09-rocky9-kvm-certification.md](lab-results/2026-10-09-rocky9-kvm-certification.md).
+- **KVM certification follow-up (2026-10-12):** a fresh Rocky Linux 9 run
+  passed the full 108-check install/matrix phase, abrupt loss while idle and
+  during backup, and backup plus file-restore ENOSPC. It exposed a runner
+  SELinux-labeling regression that was fixed and passed standalone runner and
+  release-pipeline retests on that guest. This is one matrix iteration, and
+  its first full-run runner phase failed; see
+  [the detailed evidence](lab-results/2026-10-12-rocky9-kvm-certification.md).
 - **Offsite backups** publish transactionally (temporary remote prefix,
   checked before promotion, completion marker required for restore), with
   size-aware deadlines and constrained restore arguments.
@@ -152,7 +164,7 @@ limited to non-production development installs.
 - ✅ Phase 4: Broker Integration (100%)
 - ✅ Phase 5: Operation Journals (100%)
 - ✅ Phase 6: Workflow Integration Testing (100%)
-- 🔄 Phase 7: VM-Level Failure Testing (partial: one full KVM matrix run, a failed two-iteration repeat attempt, abrupt guest kill idle and mid-backup, real ENOSPC during backup and file-restore extraction, MariaDB outage; successful repeated matrix runs, ENOSPC during publication/import/database restore, and physical power loss remain unproven)
+- 🔄 Phase 7: VM-Level Failure Testing (partial: two single-iteration full KVM matrix runs; the 2026-10-12 run also passed abrupt guest loss idle and mid-backup plus backup/file-restore ENOSPC. A runner SELinux regression was fixed and retested separately on that guest. The interrupted two-iteration attempt, 20–50 successful repeats, ENOSPC during publication/import/database restore, and physical power loss remain unproven)
 
 **What it is:** Prove StePanel survives and recovers deterministically from real failures (SIGKILL, disk full, database offline) at operation boundaries.
 

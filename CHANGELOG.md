@@ -12,6 +12,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   trusting the host certificate authorities instead of disabling TLS checks.
   The off-site recovery CLI also suppresses raw helper errors that could
   contain a temporary restored-database credential.
+- Native Caddy installs now establish the local CA trust needed for verified
+  HTTPS requests to private WordPress recovery-proof hostnames.
 - The root broker now caps each request at 8 MiB (previously 96 MiB per
   socket connection, and unbounded on the stdin transport) and charges
   buffered request bytes to a 64 MiB broker-wide budget, so 64 concurrent

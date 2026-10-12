@@ -114,3 +114,20 @@ func TestInstallerTakeoverConsentAndUpgrade(t *testing.T) {
 		t.Fatal("the upgrade consent check must run before the takeover guard")
 	}
 }
+
+func TestInstallerTrustsCaddyInternalCAAfterStartingWebServer(t *testing.T) {
+	script, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(script)
+	serviceStart := strings.Index(text, `systemctl enable --now "$APACHE_SERVICE" "$DB_SERVICE"`)
+	trust := strings.Index(text, `caddy trust --config /etc/caddy/Caddyfile`)
+	if serviceStart < 0 || trust < 0 || trust < serviceStart {
+		t.Fatal("installer must establish Caddy internal-CA trust after starting the web server")
+	}
+	caddyGuard := strings.LastIndex(text[:trust], `if [[ "$WEB_SERVER" == "caddy" ]]`)
+	if caddyGuard < serviceStart {
+		t.Fatal("Caddy trust installation must be restricted to Caddy hosts")
+	}
+}

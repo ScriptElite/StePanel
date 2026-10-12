@@ -1029,6 +1029,16 @@ elif [[ "$WEB_SERVER" == "openlitespeed" ]]; then
 else
   systemctl reload "$APACHE_SERVICE"
 fi
+if [[ "$WEB_SERVER" == "caddy" ]]; then
+  # Caddy runs as an unprivileged service account and cannot install its
+  # internal CA into the host trust store itself. Recovery proofs use normal
+  # TLS verification for Caddy's private *.localhost routes, so establish the
+  # documented trust before enabling those proofs.
+  if ! caddy trust --config /etc/caddy/Caddyfile; then
+    echo 'Unable to install Caddy internal CA trust; HTTPS WordPress recovery proofs would fail closed.' >&2
+    exit 1
+  fi
+fi
 systemctl enable --now stepanel-root-broker.service
 systemctl enable --now stepanel.service stepanel-worker.service
 health_ready=0
